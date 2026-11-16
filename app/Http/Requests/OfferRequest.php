@@ -24,12 +24,25 @@ class OfferRequest extends FormRequest
         $clean = function ($v) {
             return is_string($v) ? str_replace([',', ' '], '', $v) : $v;
         };
-        $this->merge([
+
+        $types = config('eoffering.security_types');
+        $securityType = (string) $this->input('security_type');
+        $hasTenor = (bool) ($types[$securityType]['has_tenor'] ?? true);
+
+        $merges = [
             'offer_size' => $clean($this->input('offer_size')),
             'min_subscription_amount' => $clean($this->input('min_subscription_amount')),
             'subsequent_increment' => $clean($this->input('subsequent_increment')),
             'uses_receiving_agents' => $this->boolean('uses_receiving_agents'),
-        ]);
+        ];
+
+        if (! $hasTenor) {
+            $merges['tenor'] = null;
+            $merges['maturity_date'] = null;
+            $merges['day_count_fraction'] = null;
+        }
+
+        $this->merge($merges);
     }
 
     public function rules(): array
@@ -64,7 +77,7 @@ class OfferRequest extends FormRequest
             'rate_max' => [$method === Offer::BOOK_BUILDING ? 'required' : 'nullable', 'numeric', 'gte:rate_min'],
             'implied_yield' => ['required', 'numeric', 'min:0'],
             'issue_price' => ['required', 'numeric', 'gt:0'],
-            'maturity_date' => [$hasTenor ? 'required' : 'nullable', 'date', $this->comparedToCloseDay('after')],
+            'maturity_date' => $hasTenor ? ['required', 'date', $this->comparedToCloseDay('after')] : ['nullable'],
             'allotment_date' => ['required', 'date', $this->comparedToCloseDay('on or after')],
 
             'uses_receiving_agents' => ['boolean'],
@@ -95,8 +108,15 @@ class OfferRequest extends FormRequest
     private function comparedToCloseDay(string $relation): \Closure
     {
         return function (string $attribute, $value, \Closure $fail) use ($relation) {
+            if ($value === null || trim((string) $value) === '') {
+                return;
+            }
             try {
-                $close = Carbon::parse((string) $this->input('close_at'))->startOfDay();
+                $closeStr = (string) $this->input('close_at');
+                if (trim($closeStr) === '') {
+                    return;
+                }
+                $close = Carbon::parse($closeStr)->startOfDay();
                 $day = Carbon::parse((string) $value)->startOfDay();
             } catch (\Throwable $e) {
                 return; // The 'date' rules on both fields report unparseable input.

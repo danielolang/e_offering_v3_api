@@ -19,6 +19,7 @@ use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\OnboardingController;
 use App\Http\Controllers\OnboardingReviewController;
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\QPayWebhookController;
 use App\Http\Controllers\RegistrationController;
 use Illuminate\Support\Facades\Route;
 
@@ -58,6 +59,9 @@ Route::get('public/welcome', function () {
         'sponsors' => \App\Models\Institution::where('type', \App\Models\Institution::TYPE_TSP)->where('status', \App\Models\Institution::STATUS_APPROVED)->count(),
     ]]);
 });
+
+// QPay server-to-server webhook / IPN callback
+Route::match(['get', 'post'], 'webhooks/qpay', [QPayWebhookController::class, 'handle'])->name('webhooks.qpay');
 
 Route::middleware(['auth:api', 'idle', 'active'])->group(function ($router) {
     Route::get('session/ping', function () {
@@ -110,6 +114,7 @@ Route::middleware(['auth:api', 'idle', 'active'])->group(function ($router) {
         Route::prefix('registration')->group(function ($router) {
             Route::get('/', [RegistrationController::class, 'show'])->name('tsp.registration.show');
             Route::put('/', [RegistrationController::class, 'update'])->name('tsp.registration.update');
+            Route::match(['get', 'post'], 'fee/qpay/return', [RegistrationController::class, 'qpayReturn'])->name('tsp.registration.qpay');
             Route::post('fee/{invoice}/gateway', [RegistrationController::class, 'payOnline'])->name('tsp.registration.pay');
             Route::post('fee/{invoice}/confirm', [RegistrationController::class, 'confirm'])->name('tsp.registration.callback');
             Route::post('fee/{invoice}/transfer', [RegistrationController::class, 'bankTransfer'])->name('tsp.registration.transfer');

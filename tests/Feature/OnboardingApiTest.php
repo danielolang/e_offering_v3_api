@@ -197,6 +197,7 @@ class OnboardingApiTest extends TestCase
 
         $this->putJson('/api/tsp/registration', [
             'registered_name' => 'Sponsor Ltd', 'registered_address' => '1 Road', 'contact_name' => 'C', 'contact_role' => 'Ops', 'contact_phone' => '0803',
+            'bank_name' => 'Zenith Bank', 'bank_account_name' => 'Sponsor Ltd', 'bank_account_number' => '1029384756',
         ])->assertOk();
 
         $this->getJson('/api/tsp/access-check')->assertOk();

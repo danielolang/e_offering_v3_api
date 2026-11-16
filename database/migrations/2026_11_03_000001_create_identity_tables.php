@@ -123,7 +123,7 @@ class CreateIdentityTables extends Migration
             $table->date('period_end');
             $table->date('due_date');
             $table->decimal('amount', 20, 2);
-            // paystack | flutterwave | bank_transfer
+            // qpay | bank_transfer
             $table->string('method', 20)->nullable();
             // unpaid | pending_review | paid | rejected
             $table->string('status', 20)->default('unpaid')->index();

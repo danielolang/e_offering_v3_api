@@ -45,17 +45,13 @@ return [
         'secret' => env('IGREE_SECRET'),
     ],
 
-    // Annual TSP platform fee gateways (CR s3.2).
-    'paystack' => [
-        'public_key' => env('PAYSTACK_PUBLIC_KEY'),
-        'secret_key' => env('PAYSTACK_SECRET_KEY'),
-        'url' => env('PAYSTACK_PAYMENT_URL', 'https://api.paystack.co'),
-    ],
-
-    'flutterwave' => [
-        'public_key' => env('FLW_PUBLIC_KEY'),
-        'secret_key' => env('FLW_SECRET_KEY'),
-        'url' => env('FLW_PAYMENT_URL', 'https://api.flutterwave.com/v3'),
+    // FMDQ QPay hosted checkout (see App\Services\QPay). The service code and the return
+    // URL it maps to are issued by the QPay team; the key and IV must match QPay's.
+    'qpay' => [
+        'url' => env('QPAY_URL', 'https://10.10.16.47/qpay/odrum/'),
+        'scode' => env('QPAY_SCODE', '09014444'),
+        'encryption_key' => env('QPAY_ENCRYPTION_KEY', 'AKY_45_EncryptToDecrypt_DHJA'),
+        'encryption_iv' => env('QPAY_ENCRYPTION_IV', '1789123114561012'),
     ],
 
     // CSD lodgement transmission (CR s5.4). "file" generates the report for download only.

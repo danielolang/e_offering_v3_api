@@ -23,7 +23,8 @@ class RegistrationController extends Controller
     public function show(Request $request): JsonResponse
     {
         $institution = $request->user()->institution;
-        $invoice = $institution->registration_completed_at ? $this->fees->currentInvoice($institution) : null;
+        $openInvoice = $institution->registration_completed_at ? $this->fees->currentInvoice($institution) : null;
+        $invoice = $openInvoice ?? $institution->feeInvoices()->latest('id')->first();
 
         return successResponse('Registration fetched.', [
             'institution' => $institution->only([
@@ -53,9 +54,9 @@ class RegistrationController extends Controller
             'contact_name' => ['required', 'string', 'max:191'],
             'contact_role' => ['required', 'string', 'max:100'],
             'contact_phone' => ['required', 'string', 'max:30'],
-            'bank_name' => ['nullable', 'string', 'max:100'],
-            'bank_account_name' => ['nullable', 'string', 'max:191'],
-            'bank_account_number' => ['nullable', 'digits:10'],
+            'bank_name' => ['required', 'string', 'max:100'],
+            'bank_account_name' => ['required', 'string', 'max:191'],
+            'bank_account_number' => ['required', 'digits:10'],
         ]);
 
         $institution = $request->user()->institution;
@@ -75,14 +76,14 @@ class RegistrationController extends Controller
     public function payOnline(Request $request, PlatformFeeInvoice $invoice): JsonResponse
     {
         $this->own($request, $invoice);
-        $data = $request->validate(['method' => ['required', Rule::in(['paystack', 'flutterwave'])]]);
+        $data = $request->validate(['method' => ['required', Rule::in(['qpay'])]]);
 
         $url = $this->fees->startGatewayPayment($invoice, $data['method'], $request->user(), frontendUrl('/tsp/registration?invoice=' . $invoice->id));
 
         return successResponse('Continue to payment.', ['redirect' => $url]);
     }
 
-    /** The gateway returns the browser to the Vue app, which confirms the payment here. */
+    /** The gateway returns the browser to the app, which confirms the payment here. */
     public function confirm(Request $request, PlatformFeeInvoice $invoice): JsonResponse
     {
         $this->own($request, $invoice);
@@ -96,6 +97,37 @@ class RegistrationController extends Controller
         }
 
         return successResponse('Payment received. FMDQ will confirm it shortly.');
+    }
+
+    /** QPay returns the browser to /tsp/registration with payment status, which posts here. */
+    public function qpayReturn(Request $request): JsonResponse
+    {
+        $status = $request->input('newStatus')
+            ?? $request->input('status')
+            ?? $request->input('Status')
+            ?? $request->input('payment_status')
+            ?? $request->input('payment');
+
+        $reference = $request->input('ref')
+            ?? $request->input('reference')
+            ?? $request->input('newRef')
+            ?? $request->input('gateway_reference');
+
+        $invoice = $this->fees->confirmQPayReturn(
+            $request->user()->institution,
+            $status ? (string) $status : null,
+            collect($request->except('gateway'))->map(fn ($v) => is_scalar($v) ? mb_substr((string) $v, 0, 255) : null)->filter()->all(),
+            $reference ? (string) $reference : null
+        );
+
+        if (!$invoice) {
+            return errorResponse(422, 'QPay did not confirm the payment. If you were debited, contact FMDQ with your QPay receipt.');
+        }
+
+        return successResponse('Payment successful. Full access unlocked.', [
+            'invoice' => $invoice->reference,
+            'status' => $invoice->status,
+        ]);
     }
 
     public function bankTransfer(Request $request, PlatformFeeInvoice $invoice): JsonResponse

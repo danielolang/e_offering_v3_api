@@ -24,11 +24,14 @@ class PlatformFeeService
 
     private DocumentStore $documents;
 
-    public function __construct(AuditLogger $audit, Notifier $notifier, DocumentStore $documents)
+    private QPay $qpay;
+
+    public function __construct(AuditLogger $audit, Notifier $notifier, DocumentStore $documents, QPay $qpay)
     {
         $this->audit = $audit;
         $this->notifier = $notifier;
         $this->documents = $documents;
+        $this->qpay = $qpay;
     }
 
     public function enabled(): bool
@@ -84,84 +87,172 @@ class PlatformFeeService
         ]);
     }
 
-    /** Paystack / Flutterwave: returns the hosted checkout URL. */
+    /** QPay: returns the hosted checkout URL. */
     public function startGatewayPayment(PlatformFeeInvoice $invoice, string $gateway, User $payer, string $callbackUrl): string
     {
         $this->assertPayable($invoice);
         $reference = $invoice->reference.'-'.time();
 
-        if ($gateway === 'paystack') {
-            $response = Http::withToken((string) config('services.paystack.secret_key'))->asJson()
-                ->post(rtrim((string) config('services.paystack.url'), '/').'/transaction/initialize', [
-                    'email' => $payer->email,
-                    'amount' => (int) round((float) $invoice->amount * 100),
-                    'reference' => $reference,
-                    'callback_url' => $callbackUrl,
-                    'metadata' => ['invoice' => $invoice->reference],
-                ]);
-            $url = $response->json('data.authorization_url');
-        } elseif ($gateway === 'flutterwave') {
-            $response = Http::withToken((string) config('services.flutterwave.secret_key'))->asJson()
-                ->post(rtrim((string) config('services.flutterwave.url'), '/').'/payments', [
-                    'tx_ref' => $reference,
-                    'amount' => (string) $invoice->amount,
-                    'currency' => 'NGN',
-                    'redirect_url' => $callbackUrl,
-                    'customer' => ['email' => $payer->email, 'name' => $payer->name],
-                    'customizations' => ['title' => 'FMDQ e-Offering platform fee'],
-                ]);
-            $url = $response->json('data.link');
-        } else {
-            throw ValidationException::withMessages(['method' => 'Unknown payment method.']);
+        if ($gateway === 'qpay') {
+            // QPay returns the browser to the URL registered for our service code, so the
+            // reference only marks this invoice as the one awaiting QPay's return.
+            try {
+                $name = $payer->name ?: ($invoice->institution->contact_name ?: $invoice->institution->name);
+                $phone = $payer->phone ?: ($invoice->institution->contact_phone ?: null);
+                $url = $this->qpay->checkoutUrl($payer->email, $name, (string) $invoice->amount, $phone);
+            } catch (RuntimeException $e) {
+                report($e);
+                throw ValidationException::withMessages(['method' => 'QPay is not available at the moment. Try another payment method.']);
+            }
+            $invoice->forceFill(['method' => 'qpay', 'gateway_reference' => $reference])->save();
+
+            return $url;
         }
 
-        if ($response->failed() || ! $url) {
-            throw ValidationException::withMessages(['method' => 'The payment gateway could not be reached. Try again or pay by bank transfer.']);
-        }
-
-        $invoice->forceFill(['method' => $gateway, 'gateway_reference' => $reference])->save();
-
-        return (string) $url;
+        throw ValidationException::withMessages(['method' => 'Unknown payment method.']);
     }
 
-    /** Verifies the gateway callback server-side; a confirmed payment then waits for FMDQ Admin review. */
+    /** Verifies legacy gateway callbacks; online payment uses QPay via confirmQPayReturn. */
     public function confirmGatewayPayment(PlatformFeeInvoice $invoice, string $reference, ?string $transactionId = null): bool
     {
-        if ($invoice->gateway_reference !== $reference) {
-            return false;
+        return false;
+    }
+
+    /**
+     * QPay returns the browser or sends a status callback. Successful status directly marks
+     * the invoice as PAID, granting the institution full access immediately.
+     *
+     * @param  array<string, mixed>  $returned  the query parameters QPay returned with
+     */
+    public function confirmQPayReturn(Institution $institution, ?string $status, array $returned, ?string $reference = null): ?PlatformFeeInvoice
+    {
+        if (! $this->qpay->isSuccessStatus($status)) {
+            return null;
         }
 
-        try {
-            if ($invoice->method === 'paystack') {
-                $response = Http::withToken((string) config('services.paystack.secret_key'))
-                    ->get(rtrim((string) config('services.paystack.url'), '/').'/transaction/verify/'.rawurlencode($reference));
-                $ok = $response->json('data.status') === 'success' && (int) $response->json('data.amount') === (int) round((float) $invoice->amount * 100);
-            } elseif ($invoice->method === 'flutterwave' && $transactionId) {
-                $response = Http::withToken((string) config('services.flutterwave.secret_key'))
-                    ->get(rtrim((string) config('services.flutterwave.url'), '/').'/transactions/'.rawurlencode($transactionId).'/verify');
-                $ok = $response->json('data.status') === 'successful' && (float) $response->json('data.amount') >= (float) $invoice->amount
-                    && $response->json('data.tx_ref') === $reference;
-            } else {
-                return false;
+        $ref = $reference ?: ($returned['newRef'] ?? $returned['ref'] ?? $returned['reference'] ?? null);
+
+        $invoice = null;
+
+        // 1. If reference passed, match by reference, gateway_reference, or baseRef
+        if ($ref) {
+            $baseRef = preg_replace('/-\d+$/', '', $ref);
+            $invoice = $institution->feeInvoices()
+                ->where(function ($q) use ($ref, $baseRef) {
+                    $q->where('gateway_reference', $ref)
+                        ->orWhere('reference', $ref)
+                        ->orWhere('reference', $baseRef);
+                })
+                ->latest('id')
+                ->first();
+
+            // Also try EOFF regex if ref is like EOFF1_...
+            if (! $invoice && preg_match('/EOFF_?(\d+)/i', $ref, $m)) {
+                $invoice = $institution->feeInvoices()->where('id', $m[1])->first();
             }
-        } catch (RuntimeException $e) {
-            report($e);
-
-            return false;
         }
 
-        if (! $ok) {
-            return false;
+        // 2. Fallback to latest invoice of the institution initiated with QPay
+        if (! $invoice) {
+            $invoice = $institution->feeInvoices()
+                ->where('method', 'qpay')
+                ->whereNotNull('gateway_reference')
+                ->latest('updated_at')
+                ->first();
         }
 
-        $invoice->forceFill([
-            'status' => PlatformFeeInvoice::PENDING_REVIEW,
-            'gateway_response' => (array) $response->json('data'),
-            'paid_at' => now(),
-        ])->save();
-        $this->submitted($invoice);
+        if (! $invoice) {
+            return null;
+        }
 
-        return true;
+        if ($invoice->status === PlatformFeeInvoice::PAID) {
+            return $invoice;
+        }
+
+        $this->markAsPaid($invoice, $ref ?: $invoice->gateway_reference, $returned);
+
+        return $invoice->fresh();
+    }
+
+    /**
+     * Handles an asynchronous webhook/notification directly from QPay's servers.
+     * Successful payment directly marks the invoice as PAID without requiring admin review.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    public function processWebhookPayment(?string $reference, ?string $status, array $payload, ?string $email = null): ?PlatformFeeInvoice
+    {
+        if (! $this->qpay->isSuccessStatus($status)) {
+            return null;
+        }
+
+        $invoice = null;
+
+        // Check if this payment reference was already recorded as PAID (idempotent / retry safe)
+        if ($reference) {
+            $already = PlatformFeeInvoice::where('gateway_reference', $reference)
+                ->where('status', PlatformFeeInvoice::PAID)
+                ->first();
+            if ($already) {
+                return $already;
+            }
+        }
+
+        // 1. Try matching by exact gateway_reference or reference
+        if ($reference) {
+            $baseRef = preg_replace('/-\d+$/', '', $reference);
+            $invoice = PlatformFeeInvoice::whereIn('status', [PlatformFeeInvoice::UNPAID, PlatformFeeInvoice::REJECTED, PlatformFeeInvoice::PENDING_REVIEW])
+                ->where(function ($q) use ($reference, $baseRef) {
+                    $q->where('gateway_reference', $reference)
+                        ->orWhere('reference', $reference)
+                        ->orWhere('reference', $baseRef);
+                })
+                ->first();
+
+            // 2. Try extracting invoice ID from QPay reference prefix like EOFF1_... or EOFF_1_...
+            if (! $invoice && preg_match('/EOFF_?(\d+)/i', $reference, $m)) {
+                $invoice = PlatformFeeInvoice::where('id', $m[1])
+                    ->whereIn('status', [PlatformFeeInvoice::UNPAID, PlatformFeeInvoice::REJECTED, PlatformFeeInvoice::PENDING_REVIEW])
+                    ->first();
+
+                // Or matching by institution ID
+                if (! $invoice) {
+                    $invoice = PlatformFeeInvoice::where('institution_id', $m[1])
+                        ->whereIn('status', [PlatformFeeInvoice::UNPAID, PlatformFeeInvoice::REJECTED, PlatformFeeInvoice::PENDING_REVIEW])
+                        ->latest('id')
+                        ->first();
+                }
+            }
+        }
+
+        // 3. Try matching by customer / institution email
+        if (! $invoice && $email) {
+            $invoice = PlatformFeeInvoice::whereHas('institution', function ($q) use ($email) {
+                $q->where('email', $email)->orWhereHas('users', fn ($u) => $u->where('email', $email));
+            })->whereIn('status', [PlatformFeeInvoice::UNPAID, PlatformFeeInvoice::REJECTED, PlatformFeeInvoice::PENDING_REVIEW])
+                ->latest('updated_at')
+                ->first();
+        }
+
+        // 4. Fallback to the latest unpaid/pending invoice initiated with QPay
+        if (! $invoice) {
+            $invoice = PlatformFeeInvoice::where('method', 'qpay')
+                ->whereIn('status', [PlatformFeeInvoice::UNPAID, PlatformFeeInvoice::REJECTED, PlatformFeeInvoice::PENDING_REVIEW])
+                ->latest('updated_at')
+                ->first();
+        }
+
+        if (! $invoice) {
+            return null;
+        }
+
+        if ($invoice->status === PlatformFeeInvoice::PAID) {
+            return $invoice;
+        }
+
+        $this->markAsPaid($invoice, $reference ?: $invoice->gateway_reference, $payload);
+
+        return $invoice->fresh();
     }
 
     public function submitBankTransfer(PlatformFeeInvoice $invoice, UploadedFile $evidence, ?string $reference): void
@@ -179,26 +270,51 @@ class PlatformFeeService
         $this->submitted($invoice);
     }
 
-    /** s3.2 steps 8-10. */
-    public function approve(PlatformFeeInvoice $invoice, User $admin): void
+    /**
+     * Marks an invoice as PAID directly, updates the institution's fee_paid_until,
+     * clears suspension, logs audit, and notifies the TSP.
+     */
+    public function markAsPaid(PlatformFeeInvoice $invoice, ?string $reference = null, ?array $gatewayResponse = null, ?User $admin = null): void
     {
-        $invoice->forceFill(['status' => PlatformFeeInvoice::PAID, 'reviewed_by' => $admin->id, 'reviewed_at' => now()])->save();
+        $invoice->forceFill([
+            'status' => PlatformFeeInvoice::PAID,
+            'gateway_reference' => $reference ?: $invoice->gateway_reference,
+            'gateway_response' => $gatewayResponse ?: $invoice->gateway_response,
+            'paid_at' => $invoice->paid_at ?: now(),
+            'reviewed_by' => $admin?->id,
+            'reviewed_at' => now(),
+            'review_comment' => null,
+        ])->save();
+
         $institution = $invoice->institution;
         $paidUntil = $institution->fee_paid_until && $institution->fee_paid_until->greaterThan($invoice->period_end)
             ? $institution->fee_paid_until : $invoice->period_end;
+
         $institution->forceFill([
             'fee_paid_until' => $paidUntil,
             'suspended_at' => null,
             'status' => $institution->status === Institution::STATUS_SUSPENDED ? Institution::STATUS_APPROVED : $institution->status,
         ])->save();
 
-        $this->audit->log('fee.approved', 'Approved platform fee '.$invoice->reference.' for '.$institution->name, $invoice, [], $admin);
+        $action = $admin ? 'fee.approved' : 'fee.paid';
+        $desc = $admin
+            ? 'Approved platform fee '.$invoice->reference.' for '.$institution->name
+            : 'Payment confirmed for platform fee '.$invoice->reference.' ('.($invoice->method ?? 'qpay').')';
+
+        $this->audit->log($action, $desc, $invoice, [], $admin);
+
         $this->notifier->send(
             $this->notifier->tspUsers($institution->id),
             'Platform fee payment confirmed',
-            'FMDQ confirmed your platform fee payment '.$invoice->reference.'. Your receipt is ready and you have full access until '.$paidUntil->format('F j, Y').'.',
+            'Your platform fee payment '.$invoice->reference.' is confirmed. Your receipt is ready and you have full access until '.$paidUntil->format('F j, Y').'.',
             frontendUrl('/tsp/registration/fee/'.$invoice->id.'/receipt')
         );
+    }
+
+    /** s3.2 steps 8-10. */
+    public function approve(PlatformFeeInvoice $invoice, User $admin): void
+    {
+        $this->markAsPaid($invoice, null, null, $admin);
     }
 
     public function reject(PlatformFeeInvoice $invoice, User $admin, string $comment): void

@@ -125,7 +125,7 @@ return [
 
     // s3.2 Annual platform fee. Disabled for the first year of launch.
     'platform_fee' => [
-        'gateways' => ['paystack' => 'Paystack', 'flutterwave' => 'Flutterwave', 'bank_transfer' => 'Bank Transfer'],
+        'gateways' => ['qpay' => 'QPay', 'bank_transfer' => 'Bank Transfer'],
         'invoice_days_before_due' => 30,
     ],
 

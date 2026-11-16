@@ -244,6 +244,7 @@ class OfferLifecycleTest extends TestCase
         $this->put(route('tsp.registration.update'), [
             'registered_name' => 'Lead Securities', 'registered_address' => 'Lagos', 'contact_name' => 'Ada',
             'contact_role' => 'MD', 'contact_phone' => '0800',
+            'bank_name' => 'First Bank', 'bank_account_name' => 'Lead Securities', 'bank_account_number' => '0123456789',
         ])->assertSuccessful();
         $this->get(route('tsp.dashboard'))->assertOk();
     }
