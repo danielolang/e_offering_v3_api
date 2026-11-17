@@ -14,15 +14,15 @@ return [
             'description' => 'An individual investor participating in offers in their personal capacity.',
         ],
         'institutional' => [
-            'label' => 'QII / Non-QII',
+            'label' => 'QII/Non-QII',
             'description' => 'A Qualified Institutional Investor ("QII") or Non-Qualified Institutional ("Non-QII") Investor participating in offers on behalf of an institution.',
         ],
         'tsp' => [
-            'label' => 'Transaction Sponsor / Registration Member (TSP/RM)',
+            'label' => 'Transaction Sponsor/Registration Member (TSP/RM)',
             'description' => 'Stockbrokers, Registrars, Banks and other FMDQ-registered sponsoring or registration parties who create and manage offers.',
         ],
         'regulator' => [
-            'label' => 'Regulator (SEC / CBN)',
+            'label' => 'Regulator (SEC/CBN)',
             'description' => 'The Securities and Exchange Commission ("SEC") or Central Bank of Nigeria ("CBN"), for review and approval of offers requiring regulatory sign-off.',
         ],
     ],
