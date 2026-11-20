@@ -95,6 +95,52 @@ class OfferWorkflow
         $this->approved($offer, $admin);
     }
 
+    /**
+     * After the FMDQ Admin review setting changes: offers and amendments still waiting for a
+     * review that is no longer required (switched off, or their security type unticked) would
+     * otherwise be stuck. The TSP Authoriser already approved them, so they continue as
+     * approved; the comment records why, and the TSP is notified as usual.
+     *
+     * @return array{offers: int, amendments: int}
+     */
+    public function releaseSkippedReviews(User $admin): array
+    {
+        $note = 'FMDQ Admin review is no longer required for this security type; released on the TSP Authoriser\'s approval.';
+        $offers = 0;
+        $amendments = 0;
+
+        Offer::where('status', Offer::PENDING_ADMIN_REVIEW)->get()
+            ->reject(fn (Offer $offer) => Setting::adminReviewRequiredFor($offer->security_type))
+            ->each(function (Offer $offer) use ($admin, $note, &$offers) {
+                $this->adminReview($offer, $admin, true, $note);
+                $offers++;
+            });
+
+        OfferAmendment::where('status', OfferAmendment::PENDING_ADMIN_REVIEW)->with('offer')->get()
+            ->reject(fn (OfferAmendment $amendment) => Setting::adminReviewRequiredFor($amendment->offer->security_type))
+            ->each(function (OfferAmendment $amendment) use ($admin, $note, &$amendments) {
+                $this->reviewAmendment($amendment, $admin, true, $note);
+                $amendments++;
+            });
+
+        return compact('offers', 'amendments');
+    }
+
+    /** What is waiting for FMDQ Admin review, per security type (for the Settings page). */
+    public static function pendingReviewCounts(): array
+    {
+        $counts = [];
+        foreach (Offer::where('status', Offer::PENDING_ADMIN_REVIEW)->pluck('security_type') as $type) {
+            $counts[$type] = ($counts[$type] ?? 0) + 1;
+        }
+        foreach (OfferAmendment::where('status', OfferAmendment::PENDING_ADMIN_REVIEW)->with('offer:id,security_type')->get() as $amendment) {
+            $type = $amendment->offer->security_type;
+            $counts[$type] = ($counts[$type] ?? 0) + 1;
+        }
+
+        return $counts;
+    }
+
     /** CR s4.5. */
     public function launch(Offer $offer, User $inputter): void
     {

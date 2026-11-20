@@ -19,10 +19,15 @@ class QPay
 {
     private const CIPHER = 'AES-128-CTR';
 
-    public function checkoutUrl(string $email, string $name, string $amount, ?string $phone): string
+    /**
+     * @param  string|null  $scode  the service code to charge under; defaults to the platform-fee
+     *                              code. Bid payments use their own (services.qpay.bid_scode),
+     *                              which QPay maps to its own credited account and return URL.
+     */
+    public function checkoutUrl(string $email, string $name, string $amount, ?string $phone, ?string $scode = null): string
     {
         $base = (string) config('services.qpay.url');
-        $scode = (string) config('services.qpay.scode');
+        $scode = (string) ($scode ?? config('services.qpay.scode'));
         if ($base === '' || $scode === '') {
             throw new RuntimeException('QPay is not configured: set QPAY_URL and QPAY_SCODE.');
         }

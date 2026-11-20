@@ -55,9 +55,20 @@ class OfferLifecycleTest extends TestCase
         return $offer->fresh();
     }
 
+    /** The legacy commitment form's required details (and the first signature on a new bid). */
+    private function commitmentFields(bool $creating = true): array
+    {
+        return array_filter([
+            'surname' => 'DOE', 'first_name' => 'JANE', 'contact_person' => 'JOHN DOE',
+            'address_line_1' => '1 MARINA ROAD', 'phone' => '08012345678', 'city' => 'LAGOS', 'state' => 'LAGOS',
+            'email' => 'jane.doe@example.test', 'allotment_preference' => 'book_entry',
+            'signature_1' => $creating ? UploadedFile::fake()->image('signature.png', 120, 60) : null,
+        ]);
+    }
+
     private function bid(User $investor, Offer $offer, array $data = []): Bid
     {
-        $this->actingAs($investor)->post(route('investor.bids.store', $offer), array_merge([
+        $this->actingAs($investor)->post(route('investor.bids.store', $offer), array_merge($this->commitmentFields(), [
             'investor_type' => $investor->institution ? 'pfa' : 'individual',
             'amount' => '500,000',
             'rate' => 18.0,
@@ -92,13 +103,13 @@ class OfferLifecycleTest extends TestCase
         $b2 = $this->bid($qii, $offer, ['amount' => '800000', 'rate' => 18.0]);
 
         // Below minimum and wrong increment are refused (s6.1 step 2).
-        $this->actingAs($retail)->post(route('investor.bids.store', $offer), [
+        $this->actingAs($retail)->post(route('investor.bids.store', $offer), $this->commitmentFields() + [
             'investor_type' => 'individual', 'amount' => '50000', 'rate' => 18, 'csd_name' => 'CSCS', 'csd_account_number' => 'C1',
             'bank_name' => 'B', 'bank_account_name' => 'N', 'bank_account_number' => '1234567890', 'payee_type' => 'sponsor', 'declaration' => true,
         ])->assertJsonValidationErrors('amount');
 
         // Investor amends then the bid shows in the order book immediately with Pending payment.
-        $this->actingAs($retail)->put(route('investor.bids.update', $b1), [
+        $this->actingAs($retail)->put(route('investor.bids.update', $b1), $this->commitmentFields(false) + [
             'investor_type' => 'individual', 'amount' => '700000', 'rate' => 17.5, 'csd_name' => 'CSCS', 'csd_account_number' => 'C123',
             'bank_name' => 'Demo Bank', 'bank_account_name' => 'Investor', 'bank_account_number' => '1234567890', 'payee_type' => 'sponsor', 'declaration' => true,
         ])->assertSuccessful();
@@ -213,6 +224,217 @@ class OfferLifecycleTest extends TestCase
 
         $this->actingAs($admin)->post(route('admin.offers.review', $offer), ['approve' => false, 'reason' => 'Missing rating'])->assertSuccessful();
         $this->assertSame(Offer::RETURNED, $offer->fresh()->status);
+        $this->assertSame('Missing rating', $offer->fresh()->return_reason);
+
+        // Resubmitted and authorised again, then approved by FMDQ Admin: the TSP may launch.
+        $this->actingAs($inputter)->post(route('tsp.offers.submit', $offer))->assertSuccessful();
+        $this->actingAs($authoriser)->post(route('tsp.offers.authorise', $offer), ['approve' => true]);
+        $this->assertSame(Offer::PENDING_ADMIN_REVIEW, $offer->fresh()->status);
+        $this->actingAs($admin)->post(route('admin.offers.review', $offer), ['approve' => true])->assertSuccessful();
+        $this->assertSame(Offer::APPROVED, $offer->fresh()->status);
+    }
+
+    public function test_send_for_approval_saves_and_submits_once_the_offer_is_complete(): void
+    {
+        $tsp = $this->tspInstitution();
+        $inputter = $this->tspUser($tsp, User::INPUTTER);
+
+        // Documents are not uploaded yet: saved as a draft, and the pop-up says what is missing.
+        $this->actingAs($inputter)->post(route('tsp.offers.store'), $this->offerPayload() + ['submit_after_save' => true])
+            ->assertSuccessful()
+            ->assertJsonPath('data.popup.icon', 'warning');
+        $offer = Offer::firstOrFail();
+        $this->assertSame(Offer::DRAFT, $offer->status);
+
+        foreach (config('eoffering.security_types.commercial_papers.documents') as $type) {
+            $this->post(route('tsp.offers.documents.store', $offer), ['document_type' => $type, 'file' => UploadedFile::fake()->create('d.pdf', 5, 'application/pdf')]);
+        }
+
+        // Complete now: "Send for Approval" from the edit form submits it to the Authoriser.
+        $this->put(route('tsp.offers.update', $offer), $this->offerPayload() + ['submit_after_save' => true])
+            ->assertSuccessful()
+            ->assertJsonPath('data.popup.title', 'Sent for Approval');
+        $this->assertSame(Offer::PENDING_AUTHORISATION, $offer->fresh()->status);
+    }
+
+    public function test_the_commitment_form_keeps_every_legacy_field_and_totals_the_orders(): void
+    {
+        $tsp = $this->tspInstitution();
+        $offer = $this->createLaunchedOffer($this->tspUser($tsp, User::INPUTTER), $this->tspUser($tsp, User::AUTHORISER));
+        $this->travel(2)->days(); // into the offer window
+        $investor = $this->retailInvestor();
+        $base = $this->commitmentFields() + [
+            'investor_type' => 'individual', 'amount' => '500,000', 'rate' => 18.0, 'bank_name' => 'Demo Bank', 'bank_account_name' => 'Investor',
+            'bank_account_number' => '1234567890', 'payee_type' => 'sponsor', 'declaration' => true,
+            'clearing_house_no' => 'CHN0001', 'stockbroking_firm_cscs' => 'Demo Securities', 'branch' => 'Marina', 'security_dealer' => 'Demo Dealer',
+            'joint_first_name' => 'JOHN', 'address_line_2' => 'VICTORIA ISLAND',
+        ];
+
+        // Order 2 below the minimum is refused on its own field.
+        $this->actingAs($investor)->post(route('investor.bids.store', $offer), $base + ['order_2_amount' => '1000', 'order_2_rate' => 18])
+            ->assertJsonValidationErrors('order_2_amount');
+
+        // Three orders: the bid amount is their total; every legacy field is kept on the bid.
+        $this->post(route('investor.bids.store', $offer), $base + [
+            'order_2_amount' => '600,000', 'order_2_rate' => 17.5, 'order_3_amount' => '700,000', 'order_3_rate' => 17,
+            'official_seal' => UploadedFile::fake()->image('seal.png', 80, 80),
+        ])->assertSuccessful();
+        $bid = Bid::latest('id')->firstOrFail();
+        $this->assertSame('1800000.00', $bid->amount);
+        $this->assertSame('CSCS', $bid->csd_name);
+        $this->assertSame('CHN0001', $bid->csd_account_number);
+        $this->assertSame(['DOE', 'JOHN', 'VICTORIA ISLAND', 'Demo Dealer', 'book_entry'], [
+            $bid->commitment['surname'], $bid->commitment['joint_first_name'], $bid->commitment['address_line_2'],
+            $bid->commitment['security_dealer'], $bid->commitment['allotment_preference'],
+        ]);
+        $this->assertSame([1, 2, 3], array_column($bid->commitment['orders'], 'order'));
+        $this->assertNotEmpty($bid->commitment['files']['signature_1']);
+        $this->assertNotEmpty($bid->commitment['files']['official_seal']);
+
+        // The bid page links the signature and seal images for the commitment form preview.
+        $files = $this->get(route('investor.bids.show', $bid))->assertOk()->json('data.bid.commitment_files');
+        $this->assertArrayHasKey('signature_1', $files);
+        $this->get($files['signature_1'])->assertOk();
+    }
+
+    public function test_a_bid_can_be_paid_online_with_qpay_under_its_own_service_code(): void
+    {
+        config(['services.qpay.bid_scode' => '05019999']);
+        $tsp = $this->tspInstitution();
+        $offer = $this->createLaunchedOffer($this->tspUser($tsp, User::INPUTTER), $this->tspUser($tsp, User::AUTHORISER));
+        $this->travel(2)->days(); // into the offer window
+        $investor = $this->retailInvestor();
+
+        // Placing the bid with "Pay Online with QPay" saves it, then sends the investor to QPay.
+        $response = $this->actingAs($investor)->post(route('investor.bids.store', $offer), $this->commitmentFields() + [
+            'investor_type' => 'individual', 'amount' => '500,000', 'rate' => 18.0, 'csd_name' => 'CSCS', 'csd_account_number' => 'C123',
+            'bank_name' => 'Demo Bank', 'bank_account_name' => 'Investor', 'bank_account_number' => '1234567890',
+            'payee_type' => 'sponsor', 'declaration' => true, 'pay_with' => 'qpay',
+        ])->assertSuccessful();
+        $this->assertStringStartsWith(rtrim(config('services.qpay.url'), '/'), $response->json('data.redirect'));
+        $bid = Bid::latest('id')->firstOrFail();
+        $this->assertSame('qpay', $bid->payment_method);
+        $this->assertSame(Bid::PAYMENT_PENDING, $bid->payment_status);
+
+        // The checkout carries the bid service code, not the platform-fee one.
+        $token = substr($response->json('data.redirect'), strlen(rtrim(config('services.qpay.url'), '/')) + 1);
+        $this->assertSame('05019999', app(\App\Services\QPay::class)->decrypt($token)['scode']);
+
+        // QPay returns the investor with a successful status: the bid is paid straight away.
+        $this->post(route('investor.bids.qpay-return'), ['newStatus' => 'successful'])
+            ->assertSuccessful()
+            ->assertJsonPath('data.popup.title', 'Payment Successful');
+        $this->assertSame(Bid::PAYMENT_PAID, $bid->fresh()->payment_status);
+    }
+
+    public function test_qpay_for_bids_is_refused_without_a_bid_service_code(): void
+    {
+        config(['services.qpay.bid_scode' => null]);
+        $tsp = $this->tspInstitution();
+        $offer = $this->createLaunchedOffer($this->tspUser($tsp, User::INPUTTER), $this->tspUser($tsp, User::AUTHORISER));
+        $this->travel(2)->days(); // into the offer window
+
+        $this->actingAs($this->retailInvestor())->post(route('investor.bids.store', $offer), $this->commitmentFields() + [
+            'investor_type' => 'individual', 'amount' => '500,000', 'rate' => 18.0, 'csd_name' => 'CSCS', 'csd_account_number' => 'C123',
+            'bank_name' => 'Demo Bank', 'bank_account_name' => 'Investor', 'bank_account_number' => '1234567890',
+            'payee_type' => 'sponsor', 'declaration' => true, 'pay_with' => 'qpay',
+        ])->assertStatus(422)->assertJsonValidationErrors('pay_with');
+        // Refused before placing, so no bid is left behind without a payment route.
+        $this->assertSame(0, Bid::count());
+    }
+
+    public function test_the_qpay_webhook_credits_a_bid_by_its_reference_without_touching_fees(): void
+    {
+        config(['services.qpay.bid_scode' => '05019999']);
+        $tsp = $this->tspInstitution();
+        $offer = $this->createLaunchedOffer($this->tspUser($tsp, User::INPUTTER), $this->tspUser($tsp, User::AUTHORISER));
+        $this->travel(2)->days(); // into the offer window
+        $investor = $this->retailInvestor();
+        $bid = $this->bid($investor, $offer);
+
+        // Evidence of payment is with the sponsor: paying again is refused until it is marked Invalid.
+        $this->actingAs($investor)->post(route('investor.bids.qpay', $bid))->assertSuccessful()->assertJsonPath('data.popup.icon', 'warning');
+        $this->assertNull($bid->fresh()->payment_gateway_reference);
+        $this->post(route('investor.bids.evidence', $bid), ['evidence' => UploadedFile::fake()->create('again.pdf', 10, 'application/pdf')])->assertStatus(422);
+        $this->assertTrue($this->get(route('investor.bids.show', $bid))->json('data.awaitingReview'));
+
+        $bid->forceFill(['payment_status' => Bid::PAYMENT_INVALID])->save();
+        $this->actingAs($investor)->post(route('investor.bids.qpay', $bid))->assertSuccessful();
+        $reference = $bid->fresh()->payment_gateway_reference;
+
+        $this->postJson(route('webhooks.qpay'), ['newStatus' => 'successful', 'newRef' => $reference])
+            ->assertOk()->assertJsonPath('bid', $bid->reference);
+        $this->assertSame(Bid::PAYMENT_PAID, $bid->fresh()->payment_status);
+    }
+
+    public function test_the_wizard_saves_documents_with_the_offer_in_one_request(): void
+    {
+        $tsp = $this->tspInstitution();
+        $inputter = $this->tspUser($tsp, User::INPUTTER);
+        $required = config('eoffering.security_types.commercial_papers.documents');
+        $documents = array_map(fn ($type) => ['type' => $type, 'file' => UploadedFile::fake()->create(str_replace(' ', '-', $type).'.pdf', 5, 'application/pdf')], $required);
+
+        // Details and every required document in one request: created and sent for approval.
+        $this->actingAs($inputter)->post(route('tsp.offers.store'), $this->offerPayload() + ['new_documents' => $documents, 'submit_after_save' => true])
+            ->assertSuccessful()
+            ->assertJsonPath('data.popup.title', 'Sent for Approval');
+        $offer = Offer::firstOrFail();
+        $this->assertSame(Offer::PENDING_AUTHORISATION, $offer->status);
+        $this->assertSame(count($required), $offer->documents()->count());
+
+        // The edit form lists what is uploaded; removing one on save deletes it.
+        $offer->forceFill(['status' => Offer::RETURNED])->save();
+        $listed = $this->get(route('tsp.offers.edit', $offer))->assertOk()->json('data.documents');
+        $this->assertCount(count($required), $listed);
+        $this->put(route('tsp.offers.update', $offer), $this->offerPayload() + ['remove_documents' => [$listed[0]['id']]])->assertSuccessful();
+        $this->assertSame(count($required) - 1, $offer->documents()->count());
+    }
+
+    public function test_switching_fmdq_review_off_releases_offers_waiting_for_it(): void
+    {
+        Setting::put('fmdq_admin_review_enabled', true);
+        $tsp = $this->tspInstitution();
+        $inputter = $this->tspUser($tsp, User::INPUTTER);
+        $authoriser = $this->tspUser($tsp, User::AUTHORISER);
+        $admin = User::factory()->create();
+
+        $this->actingAs($inputter)->post(route('tsp.offers.store'), $this->offerPayload())->assertSuccessful();
+        $offer = Offer::firstOrFail();
+        foreach (config('eoffering.security_types.commercial_papers.documents') as $type) {
+            $this->post(route('tsp.offers.documents.store', $offer), ['document_type' => $type, 'file' => UploadedFile::fake()->create('d.pdf', 5, 'application/pdf')]);
+        }
+        $this->post(route('tsp.offers.submit', $offer))->assertSuccessful();
+        $this->actingAs($authoriser)->post(route('tsp.offers.authorise', $offer), ['approve' => true]);
+        $this->assertSame(Offer::PENDING_ADMIN_REVIEW, $offer->fresh()->status);
+
+        // The Settings page shows what is waiting, per security type.
+        $this->actingAs($admin)->get(route('admin.settings'))->assertOk()->assertJsonPath('data.pendingReview.commercial_papers', 1);
+
+        // Switched off: the offer would be stuck, so it continues on the TSP Authoriser's approval.
+        $this->put(route('admin.settings.update'), [
+            'fmdq_admin_review_enabled' => false, 'fmdq_admin_review_security_types' => [],
+            'platform_fee_enabled' => false, 'platform_fee_amount' => 0,
+        ])->assertSuccessful();
+        $this->assertSame(Offer::APPROVED, $offer->fresh()->status);
+    }
+
+    public function test_fmdq_admin_review_only_applies_to_the_selected_security_types(): void
+    {
+        // Enabled for bonds only: a commercial paper skips the FMDQ step entirely.
+        Setting::put('fmdq_admin_review_enabled', true);
+        Setting::put('fmdq_admin_review_security_types', ['bonds']);
+        $tsp = $this->tspInstitution();
+        $inputter = $this->tspUser($tsp, User::INPUTTER);
+        $authoriser = $this->tspUser($tsp, User::AUTHORISER);
+
+        $this->actingAs($inputter)->post(route('tsp.offers.store'), $this->offerPayload())->assertSuccessful();
+        $offer = Offer::firstOrFail();
+        foreach (config('eoffering.security_types.commercial_papers.documents') as $type) {
+            $this->post(route('tsp.offers.documents.store', $offer), ['document_type' => $type, 'file' => UploadedFile::fake()->create('d.pdf', 5, 'application/pdf')]);
+        }
+        $this->post(route('tsp.offers.submit', $offer))->assertSuccessful();
+        $this->actingAs($authoriser)->post(route('tsp.offers.authorise', $offer), ['approve' => true]);
+        $this->assertSame(Offer::APPROVED, $offer->fresh()->status);
     }
 
     public function test_offer_needs_required_documents_before_submission(): void
@@ -245,8 +467,19 @@ class OfferLifecycleTest extends TestCase
             'registered_name' => 'Lead Securities', 'registered_address' => 'Lagos', 'contact_name' => 'Ada',
             'contact_role' => 'MD', 'contact_phone' => '0800',
             'bank_name' => 'First Bank', 'bank_account_name' => 'Lead Securities', 'bank_account_number' => '0123456789',
-        ])->assertSuccessful();
+        ])->assertSuccessful()
+            // Full access unlocked: the app opens the dashboard with a pop-up.
+            ->assertJsonPath('data.redirect', '/tsp')
+            ->assertJsonPath('data.popup.title', 'Registration complete');
         $this->get(route('tsp.dashboard'))->assertOk();
+
+        // Submitted and fully active: the details are now final.
+        $this->put(route('tsp.registration.update'), [
+            'registered_name' => 'Renamed Ltd', 'registered_address' => 'Abuja', 'contact_name' => 'Ada',
+            'contact_role' => 'MD', 'contact_phone' => '0800',
+            'bank_name' => 'First Bank', 'bank_account_name' => 'Lead Securities', 'bank_account_number' => '0123456789',
+        ])->assertForbidden();
+        $this->assertSame('Lead Securities', $tsp->fresh()->registered_name);
     }
 
     public function test_annual_fee_blocks_access_until_admin_confirms_payment(): void
@@ -270,5 +503,25 @@ class OfferLifecycleTest extends TestCase
         // fresh(): the in-memory $inputter still caches the institution as it was before approval.
         $this->actingAs($inputter->fresh())->get(route('tsp.dashboard'))->assertOk();
         $this->get(route('tsp.registration.receipt', $invoice))->assertOk();
+    }
+
+    public function test_switching_the_fee_on_keeps_access_for_tsps_registered_while_it_was_off(): void
+    {
+        Setting::put('platform_fee_enabled', false);
+        $tsp = $this->tspInstitution(['registration_completed_at' => now()->subMonths(2)]);
+        $inputter = $this->tspUser($tsp, User::INPUTTER);
+        $admin = User::factory()->create();
+        $this->actingAs($inputter)->get(route('tsp.dashboard'))->assertOk();
+
+        $this->actingAs($admin)->put(route('admin.settings.update'), [
+            'fmdq_admin_review_enabled' => false, 'fmdq_admin_review_security_types' => [],
+            'platform_fee_enabled' => true, 'platform_fee_amount' => 250000,
+        ])->assertSuccessful();
+
+        // The free period counts as their first year: still full access, and nothing to pay yet.
+        $this->assertSame(now()->subMonths(2)->addYear()->subDay()->toDateString(), $tsp->fresh()->fee_paid_until->toDateString());
+        $this->actingAs($inputter->fresh())->get(route('tsp.dashboard'))->assertOk();
+        $this->get(route('tsp.registration.show'))->assertOk()->assertJsonPath('data.fullAccess', true)->assertJsonPath('data.invoice', null);
+        $this->assertSame(0, $tsp->feeInvoices()->count());
     }
 }

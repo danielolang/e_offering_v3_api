@@ -71,7 +71,9 @@ return [
     |
     */
 
-    'timezone' => 'UTC',
+    // Offer open/close times are entered and shown as Nigerian wall-clock time, so "now" must be
+    // Lagos time too; with UTC an offer opening at 1:15 PM stayed "Upcoming" until 2:15 PM.
+    'timezone' => env('APP_TIMEZONE', 'Africa/Lagos'),
 
     /*
     |--------------------------------------------------------------------------

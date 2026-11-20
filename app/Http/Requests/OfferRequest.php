@@ -98,6 +98,13 @@ class OfferRequest extends FormRequest
             'co_sponsors.*.bank_name' => ['nullable', 'string', 'max:100'],
             'co_sponsors.*.bank_account_name' => ['nullable', 'string', 'max:191'],
             'co_sponsors.*.bank_account_number' => ['nullable', 'digits:10'],
+
+            // Supporting documents travel with the offer, so the wizard saves everything in one request.
+            'new_documents' => ['array', 'max:20'],
+            'new_documents.*.type' => ['required', 'string', 'max:191'],
+            'new_documents.*.file' => ['required', 'file', 'mimes:pdf,doc,docx,xls,xlsx,jpg,jpeg,png', 'max:20480'],
+            'remove_documents' => ['array'],
+            'remove_documents.*' => ['integer'],
         ];
     }
 
@@ -157,6 +164,7 @@ class OfferRequest extends FormRequest
             'min_subscription_amount' => 'minimum subscription amount',
             'receiving_agents.*.bank_account_number' => 'account number',
             'co_sponsors.*.institution_id' => 'co-sponsor',
+            'new_documents.*.file' => 'document',
         ];
     }
 

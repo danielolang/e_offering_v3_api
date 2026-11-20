@@ -20,10 +20,13 @@ class PlatformNotification extends Notification implements ShouldQueue
 {
     use Queueable;
 
-    public int $tries = 3;
+    public int $tries = 6;
 
-    /** Seconds between retries when the mail server is unavailable. */
-    public array $backoff = [30, 120];
+    /**
+     * Seconds between retries when the mail server is unavailable (e.g. a DNS or network
+     * blip): retries over about an hour before the job is given up and logged as failed.
+     */
+    public array $backoff = [30, 120, 300, 900, 1800];
 
     public string $title;
 
@@ -61,15 +64,19 @@ class PlatformNotification extends Notification implements ShouldQueue
 
     public function toMail($notifiable): MailMessage
     {
+        // Email subjects, headings and buttons are title case, as across the web app.
+        $title = titleCase($this->title);
+
         return (new MailMessage())
-            ->subject($this->title)
+            ->subject($title)
             ->view('emails.notification', [
-                'title' => $this->title,
+                'title' => $title,
                 'body' => $this->message,
                 'url' => $this->url,
                 'code' => $this->options['code'] ?? null,
-                'button' => $this->options['button'] ?? 'Open e-Offering',
-                'name' => $notifiable->name ?? null,
+                'button' => titleCase($this->options['button'] ?? 'Open e-Offering'),
+                // On-demand (address-only) recipients have no model, so the sender passes the name.
+                'name' => $this->options['name'] ?? $notifiable->name ?? null,
             ]);
     }
 

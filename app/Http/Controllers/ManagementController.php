@@ -12,6 +12,7 @@ use App\Models\Setting;
 use App\Models\User;
 use App\Models\UserChangeRequest;
 use App\Services\AuditLogger;
+use App\Services\OfferWorkflow;
 use App\Services\OnboardingService;
 use App\Services\PlatformFeeService;
 use Illuminate\Http\JsonResponse;
@@ -204,6 +205,8 @@ class ManagementController extends Controller
             'securityTypes' => collect(config('eoffering.security_types'))->map(function ($t, $k) {
                 return ['value' => $k, 'label' => $t['label']];
             })->values(),
+            // Offers and amendments waiting for FMDQ Admin review, per security type.
+            'pendingReview' => (object) OfferWorkflow::pendingReviewCounts(),
         ]);
     }
 
@@ -226,6 +229,17 @@ class ManagementController extends Controller
         }
         $audit->log('settings.updated', 'Updated platform settings', null, ['before' => $before, 'after' => $data], $request->user());
 
-        return successResponse('Settings saved.');
+        // Offers waiting for a review that is no longer required continue as approved.
+        $released = app(OfferWorkflow::class)->releaseSkippedReviews($request->user());
+        $releasedTotal = $released['offers'] + $released['amendments'];
+
+        // Switching the fee on must not lock out TSP/RMs that registered while it was off.
+        if ($data['platform_fee_enabled'] && empty($before['platform_fee_enabled'])) {
+            app(PlatformFeeService::class)->coverFreePeriod($request->user());
+        }
+
+        return successResponse($releasedTotal > 0
+            ? 'Settings saved. '.$releasedTotal.' item(s) waiting for FMDQ review no longer need it and were released to the TSP as approved.'
+            : 'Settings saved.');
     }
 }

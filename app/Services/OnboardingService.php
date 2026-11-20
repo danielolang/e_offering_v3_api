@@ -7,7 +7,9 @@ use App\Models\InvestorProfile;
 use App\Models\User;
 use App\Notifications\PlatformNotification;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Notifications\AnonymousNotifiable;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -182,9 +184,18 @@ class OnboardingService
 
         $this->audit->log('onboarding.approved', 'Approved onboarding of '.$institution->name.' ('.$institution->typeLabel().')', $institution, [], $admin);
 
-        foreach ($institution->users()->get() as $user) {
+        $users = $institution->users()->get();
+        foreach ($users as $user) {
             $this->sendActivation($user, 'Your e-Offering onboarding request was approved');
         }
+
+        $this->mailInstitution($institution, $users->pluck('email')->all(), new PlatformNotification(
+            'Your e-Offering onboarding request was approved',
+            'FMDQ approved the '.$institution->typeLabel().' onboarding request '.$institution->reference.' for '.$institution->name.'. '
+                .'Each authorised user has been emailed a link to set their password and sign in.',
+            frontendUrl('/auth/login'),
+            ['mail_only' => true, 'button' => 'Sign in', 'name' => $institution->name]
+        ));
     }
 
     /**
@@ -231,23 +242,51 @@ class OnboardingService
             ], $admin);
         });
 
-        // Sent after the commit, so a mail outage cannot undo the rejection. The in-memory
-        // models still carry each name and address for the email.
+        // Sent after the commit, so a mail outage cannot undo the rejection. The users were just
+        // deleted, and a queued notification re-loads its notifiable from the database, so the
+        // mail is addressed on demand (by address) instead of to the User models.
         $users->each(function (User $user) use ($reason) {
-            $this->mailQuietly($user, new PlatformNotification(
+            $this->mailQuietly(Notification::route('mail', $user->email), new PlatformNotification(
                 'Your e-Offering onboarding request was not approved',
                 'FMDQ reviewed your onboarding request and could not approve it. Reason: '.$reason,
                 null,
-                ['mail_only' => true]
+                ['mail_only' => true, 'name' => $user->name]
             ));
         });
+
+        $this->mailInstitution($institution, $users->pluck('email')->all(), new PlatformNotification(
+            'Your e-Offering onboarding request was not approved',
+            'FMDQ reviewed the '.$institution->typeLabel().' onboarding request '.$institution->reference.' for '.$institution->name
+                .' and could not approve it. Reason: '.$reason.' You can submit a new request once the issue is resolved.',
+            frontendUrl('/register'),
+            ['mail_only' => true, 'button' => 'Start a new request', 'name' => $institution->name]
+        ));
     }
 
-    /** A mail outage must not undo an approval; the link can be re-sent or requested again. */
-    private function mailQuietly(User $user, PlatformNotification $notification): void
+    /**
+     * Emails the institution's own address about the review outcome (all account types).
+     * Skipped when that address is also one of its users' (e.g. a regulator's contact), who
+     * already receives an email, so nobody gets the same news twice.
+     */
+    private function mailInstitution(Institution $institution, array $userEmails, PlatformNotification $notification): void
+    {
+        $email = Str::lower(trim((string) $institution->email));
+        if ($email === '' || in_array($email, array_map([Str::class, 'lower'], $userEmails), true)) {
+            return;
+        }
+
+        $this->mailQuietly(Notification::route('mail', $email), $notification);
+    }
+
+    /**
+     * A mail outage must not undo an approval; the link can be re-sent or requested again.
+     *
+     * @param User|AnonymousNotifiable $to
+     */
+    private function mailQuietly($to, PlatformNotification $notification): void
     {
         try {
-            $user->notify($notification);
+            $to->notify($notification);
         } catch (\Throwable $e) {
             report($e);
         }

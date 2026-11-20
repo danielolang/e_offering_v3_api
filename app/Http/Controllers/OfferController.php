@@ -17,6 +17,7 @@ use App\Services\OfferWorkflow;
 use App\Services\Reports\Exporter;
 use App\Support\Access;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -81,8 +82,43 @@ class OfferController extends Controller
             return $offer;
         });
         $this->audit->log('offer.created', 'Created offer '.$offer->reference.' ('.$offer->issuer_name.')', $offer, [], $user);
+        $this->syncDocuments($offer, $request);
 
-        return successResponse('Offer saved as a draft. Upload the supporting documents, then submit it for approval.', ['redirect' => screenPath(route('tsp.offers.show', $offer))]);
+        return $this->saved($request, $offer, 'Offer saved as a draft. You can send it for approval once the required documents are uploaded.');
+    }
+
+    /**
+     * After saving: "Save Draft" just opens the offer. "Send for Approval" also submits it to
+     * the Authoriser; if it is not complete yet (e.g. documents still to upload) it stays a
+     * saved draft and the pop-up says what is missing.
+     */
+    private function saved(Request $request, Offer $offer, string $draftMessage): JsonResponse
+    {
+        $redirect = screenPath(route('tsp.offers.show', $offer));
+
+        if (! $request->boolean('submit_after_save')) {
+            return successResponse($draftMessage, ['redirect' => $redirect]);
+        }
+
+        try {
+            $this->workflow->submit($offer->fresh(), $request->user());
+        } catch (ValidationException $e) {
+            $missing = collect($e->errors())->flatten()->implode(' ');
+
+            return successResponse('Offer saved as a draft.', [
+                'redirect' => $redirect,
+                'popup' => [
+                    'icon' => 'warning',
+                    'title' => 'Saved as a Draft',
+                    'text' => 'The offer is saved but cannot be sent for approval yet. '.$missing.' Then use "Submit for Approval" on the offer page.',
+                ],
+            ]);
+        }
+
+        return successResponse('Offer sent to your Authoriser for approval.', [
+            'redirect' => $redirect,
+            'popup' => ['title' => 'Sent for Approval', 'text' => 'The offer was saved and sent to your Authoriser for approval. You will be notified of the decision.'],
+        ]);
     }
 
     public function show(Request $request, Offer $offer): JsonResponse
@@ -112,8 +148,9 @@ class OfferController extends Controller
             $this->syncParties($offer, $request);
         });
         $this->audit->log('offer.updated', 'Updated draft offer '.$offer->reference, $offer, [], $request->user());
+        $this->syncDocuments($offer, $request);
 
-        return successResponse('Offer updated.', ['redirect' => screenPath(route('tsp.offers.show', $offer))]);
+        return $this->saved($request, $offer, 'Offer updated.');
     }
 
     public function uploadDocument(Request $request, Offer $offer, DocumentStore $store): JsonResponse
@@ -125,11 +162,17 @@ class OfferController extends Controller
             'file' => ['required', 'file', 'mimes:pdf,doc,docx,xls,xlsx,jpg,jpeg,png', 'max:20480'],
             'visible_to_investors' => ['boolean'],
         ]);
-        $file = $request->file('file');
+        $this->attachDocument($offer, $data['document_type'], $request->file('file'), $request->user(), $store, $request->boolean('visible_to_investors', true));
 
+        return successResponse($data['document_type'].' uploaded.');
+    }
+
+    /** Stores one supporting document; a draft keeps a single file per document type. */
+    private function attachDocument(Offer $offer, string $type, UploadedFile $file, User $user, DocumentStore $store, bool $visible = true): void
+    {
         // Replace an earlier upload of the same required document while the offer is a draft.
         if ($offer->isEditable()) {
-            foreach ($offer->documents()->where('category', OfferDocument::OFFER)->where('document_type', $data['document_type'])->get() as $old) {
+            foreach ($offer->documents()->where('category', OfferDocument::OFFER)->where('document_type', $type)->get() as $old) {
                 $store->delete($old->path);
                 $old->delete();
             }
@@ -137,16 +180,34 @@ class OfferController extends Controller
 
         $offer->documents()->create([
             'category' => $offer->isEditable() ? OfferDocument::OFFER : OfferDocument::AMENDMENT,
-            'document_type' => $data['document_type'],
+            'document_type' => $type,
             'original_name' => $file->getClientOriginalName(),
             'path' => $store->store($file, 'offers/'.$offer->id),
             'size' => (int) $file->getSize(),
-            'visible_to_investors' => $request->boolean('visible_to_investors', true),
-            'uploaded_by' => $request->user()->id,
+            'visible_to_investors' => $visible,
+            'uploaded_by' => $user->id,
         ]);
-        $this->audit->log('offer.document', 'Uploaded '.$data['document_type'].' to '.$offer->reference, $offer, ['file' => $file->getClientOriginalName()], $request->user());
+        $this->audit->log('offer.document', 'Uploaded '.$type.' to '.$offer->reference, $offer, ['file' => $file->getClientOriginalName()], $user);
+    }
 
-        return successResponse($data['document_type'].' uploaded.');
+    /** The wizard's document changes, saved with the offer itself (removals first, then uploads). */
+    private function syncDocuments(Offer $offer, OfferRequest $request): void
+    {
+        $store = app(DocumentStore::class);
+        $removeIds = array_map('intval', (array) $request->input('remove_documents', []));
+        if ($removeIds !== []) {
+            foreach ($offer->documents()->where('category', OfferDocument::OFFER)->whereIn('id', $removeIds)->get() as $document) {
+                $store->delete($document->path);
+                $document->delete();
+                $this->audit->log('offer.document_removed', 'Removed '.$document->document_type.' from '.$offer->reference, $offer, [], $request->user());
+            }
+        }
+        foreach ((array) $request->file('new_documents', []) as $i => $upload) {
+            $type = (string) $request->input("new_documents.$i.type");
+            if (isset($upload['file']) && $upload['file'] instanceof UploadedFile && $type !== '') {
+                $this->attachDocument($offer, $type, $upload['file'], $request->user(), $store);
+            }
+        }
     }
 
     public function deleteDocument(Request $request, Offer $offer, OfferDocument $document, DocumentStore $store): JsonResponse
@@ -322,6 +383,10 @@ class OfferController extends Controller
 
         return [
             'offer' => $offer,
+            // The documents step of the wizard shows what is already uploaded for each type.
+            'documents' => $offer
+                ? $offer->documents()->where('category', OfferDocument::OFFER)->get(['id', 'document_type', 'original_name', 'size'])
+                : [],
             'options' => [
                 'issuerTypes' => config('eoffering.issuer_types'),
                 'securityTypes' => config('eoffering.security_types'),

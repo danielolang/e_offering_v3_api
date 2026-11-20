@@ -40,7 +40,7 @@ if (!function_exists('signedFileUrl')) {
     function signedFileUrl(string $route, $params): string
     {
         $params = is_array($params) ? array_values($params) : [$params];
-        $names = ['documents.show' => ['document'], 'bids.evidence' => ['bid'], 'fees.evidence' => ['invoice'], 'institutions.file' => ['institution', 'index']];
+        $names = ['documents.show' => ['document'], 'bids.evidence' => ['bid'], 'bids.commitment-file' => ['bid', 'file'], 'fees.evidence' => ['invoice'], 'institutions.file' => ['institution', 'index']];
         $named = array_combine($names[$route], $params);
         $named['uid'] = auth('api')->id();
 
@@ -53,5 +53,32 @@ if (!function_exists('screenPath')) {
     function screenPath(string $apiUrl): string
     {
         return preg_replace('#^https?://[^/]+/api#', '', $apiUrl) ?: '/';
+    }
+}
+
+if (! function_exists('titleCase')) {
+    /**
+     * "Your onboarding request was approved" -> "Your Onboarding Request Was Approved", as the
+     * web app's titleCase(): words with inner capitals (e-Offering, QPay, FMDQ, TSP/RM) are kept,
+     * small joining words stay lower case unless they come first.
+     */
+    function titleCase(string $text): string
+    {
+        $small = ['a', 'an', 'and', 'as', 'at', 'by', 'for', 'in', 'of', 'on', 'or', 'per', 'the', 'to', 'via', 'with', 'from', 'vs'];
+        $first = true;
+
+        return (string) preg_replace_callback("/[A-Za-z][A-Za-z'’-]*/u", function ($m) use (&$first, $small) {
+            $word = $m[0];
+            if (preg_match('/[A-Z]/', substr($word, 1))) {
+                $result = $word;
+            } elseif (! $first && in_array(strtolower($word), $small, true)) {
+                $result = strtolower($word);
+            } else {
+                $result = ucfirst($word);
+            }
+            $first = false;
+
+            return $result;
+        }, $text);
     }
 }

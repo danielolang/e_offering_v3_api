@@ -48,6 +48,14 @@ class RegistrationController extends Controller
     /** Registered details and contact person (s3.2 step 6). */
     public function update(Request $request, AuditLogger $audit): JsonResponse
     {
+        // Once submitted and fully active, the registration details are final.
+        $current = $request->user()->institution;
+        abort_if(
+            $current->registration_completed_at && $this->fees->hasFullAccess($current),
+            403,
+            'Your registration is complete, so these details can no longer be edited. Contact FMDQ if anything needs to change.'
+        );
+
         $data = $request->validate([
             'registered_name' => ['required', 'string', 'max:191'],
             'registered_address' => ['required', 'string', 'max:255'],
@@ -68,9 +76,20 @@ class RegistrationController extends Controller
         $institution->save();
         $audit->log('tsp.registration', ($first ? 'Completed' : 'Updated') . ' TSP/RM registration details', $institution, [], $request->user());
 
-        return successResponse($this->fees->hasFullAccess($institution)
-            ? 'Registration saved. You now have full access to the Transaction Sponsor modules.'
-            : 'Registration saved. Pay the annual platform fee below to unlock the Transaction Sponsor modules.');
+        if ($this->fees->hasFullAccess($institution)) {
+            return $this->unlocked('Registration complete', 'Your registration is complete and you now have full access to the Transaction Sponsor modules.');
+        }
+
+        return successResponse('Registration saved. Pay the annual platform fee below to unlock the Transaction Sponsor modules.');
+    }
+
+    /** Full access was just unlocked: the app opens the dashboard and shows a success pop-up. */
+    private function unlocked(string $title, string $message): JsonResponse
+    {
+        return successResponse($message, [
+            'redirect' => '/tsp',
+            'popup' => ['title' => $title, 'text' => $message],
+        ]);
     }
 
     public function payOnline(Request $request, PlatformFeeInvoice $invoice): JsonResponse
@@ -94,6 +113,10 @@ class RegistrationController extends Controller
 
         if (!$this->fees->confirmGatewayPayment($invoice, $data['reference'], $data['transaction_id'] ?? null)) {
             return errorResponse(422, 'We could not confirm the payment. If you were debited, contact FMDQ with reference ' . $data['reference'] . '.');
+        }
+
+        if ($this->fees->hasFullAccess($invoice->institution->fresh())) {
+            return $this->unlocked('Payment successful', 'Your platform fee is paid and you now have full access to the Transaction Sponsor modules.');
         }
 
         return successResponse('Payment received. FMDQ will confirm it shortly.');
@@ -124,7 +147,11 @@ class RegistrationController extends Controller
             return errorResponse(422, 'QPay did not confirm the payment. If you were debited, contact FMDQ with your QPay receipt.');
         }
 
-        return successResponse('Payment successful. Full access unlocked.', [
+        if ($this->fees->hasFullAccess($request->user()->institution->fresh())) {
+            return $this->unlocked('Payment successful', 'Your platform fee is paid and you now have full access to the Transaction Sponsor modules.');
+        }
+
+        return successResponse('Payment received. FMDQ will confirm it shortly.', [
             'invoice' => $invoice->reference,
             'status' => $invoice->status,
         ]);

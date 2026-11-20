@@ -16,10 +16,10 @@ class DemoOfferSeeder extends Seeder
 {
     public function run(): void
     {
-        $tsp = Institution::where('email', 'tsp@example.com')->firstOrFail();
-        $inputter = User::where('email', 'inputter@example.com')->firstOrFail();
-        $retail = User::where('email', 'retail@example.com')->firstOrFail();
-        $qii = User::where('email', 'qii@example.com')->firstOrFail();
+        $tsp = Institution::where('email', 'tsp@fmdqgroup.com')->firstOrFail();
+        $inputter = User::where('email', 'inputter@fmdqgroup.com')->firstOrFail();
+        $retail = User::where('email', 'retail@fmdqgroup.com')->firstOrFail();
+        $qii = User::where('email', 'qii@fmdqgroup.com')->firstOrFail();
 
         $base = [
             'institution_id' => $tsp->id,
@@ -82,9 +82,9 @@ class DemoOfferSeeder extends Seeder
         $investors = [$retail, $qii];
         $types = ['pfa', 'fund_manager', 'bank', 'insurance', 'hni', 'trustee'];
         for ($i = 1; $i <= 8; $i++) {
-            $investors[] = User::updateOrCreate(['email' => "investor{$i}@example.com"], [
+            $investors[] = User::updateOrCreate(['email' => "investor{$i}@fmdqgroup.com"], [
                 'name' => "Demo Investor {$i}", 'type' => User::TYPE_INVESTOR, 'status' => User::STATUS_ACTIVE,
-                'password' => bcrypt('Password@1'), 'email_verified_at' => now(),
+                'password' => bcrypt('Pass@1111'), 'email_verified_at' => now(),
             ]);
             $investors[$i + 1]->investorProfile()->updateOrCreate(['user_id' => $investors[$i + 1]->id], ['category' => 'retail']);
         }

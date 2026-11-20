@@ -50,6 +50,12 @@ return [
     'qpay' => [
         'url' => env('QPAY_URL', 'https://10.10.16.47/qpay/odrum/'),
         'scode' => env('QPAY_SCODE', '09014444'),
+        // Investors' bid payments: a separate service code, so QPay credits the subscription
+        // account (not the platform-fee one) and returns investors to /investor/bids/qpay-return.
+        // Outside production it falls back to QPAY_SCODE so QPay can be tried on test before
+        // FMDQ issues the bid code. In production, empty = QPay is not offered for bids (bank
+        // transfer with evidence still works).
+        'bid_scode' => env('QPAY_BID_SCODE', env('APP_ENV') === 'production' ? null : env('QPAY_SCODE', '09014444')),
         'encryption_key' => env('QPAY_ENCRYPTION_KEY', 'AKY_45_EncryptToDecrypt_DHJA'),
         'encryption_iv' => env('QPAY_ENCRYPTION_IV', '1789123114561012'),
     ],
