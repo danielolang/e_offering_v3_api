@@ -15,8 +15,27 @@
         <td align="center">
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
                 <tr>
-                    <td style="background:{{ $navy }};padding:22px 32px;">
-                        <span style="color:#ffffff;font-size:18px;font-weight:600;letter-spacing:.2px;">FMDQ <span style="color:{{ $gold }};">e-Offering</span></span>
+                    <td align="center" style="background:{{ $navy }};padding:22px 32px 18px;">
+                        {{-- The logo is embedded in the email (CID), so it shows without a public URL; email
+                             clients block SVG, hence the PNG. It is dark artwork, so it sits on a white chip,
+                             with the platform name under it as in the app's sidebar. --}}
+                        <table role="presentation" cellpadding="0" cellspacing="0" align="center">
+                            <tr>
+                                <td align="center" style="background:#ffffff;border-radius:8px;padding:8px 14px;line-height:0;">
+                                    @if (isset($message))
+                                        <img src="{{ $message->embed(resource_path('images/fmdq-logo-email.png')) }}" width="120" height="40" alt="FMDQ" style="display:block;border:0;width:120px;height:40px;">
+                                    @else
+                                        <span style="font-size:18px;font-weight:700;color:{{ $navy }};line-height:24px;">FMDQ</span>
+                                    @endif
+                                </td>
+                            </tr>
+                            <tr>
+                                <td align="center" style="padding-top:10px;line-height:16px;white-space:nowrap;">
+                                    <span style="color:#ffffff;font-size:15px;font-weight:600;">e-Offering</span>
+                                    <span style="color:{{ $gold }};font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;padding-left:4px;">Platform</span>
+                                </td>
+                            </tr>
+                        </table>
                     </td>
                 </tr>
                 <tr><td style="height:4px;background:{{ $gold }};line-height:4px;font-size:0;">&nbsp;</td></tr>

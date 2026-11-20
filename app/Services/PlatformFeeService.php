@@ -55,6 +55,38 @@ class PlatformFeeService
         return $institution->fee_paid_until !== null && $institution->fee_paid_until->endOfDay()->isFuture();
     }
 
+    /**
+     * Called when the fee is switched on. TSP/RMs that completed registration while it was
+     * off already have full access and never had a paid period, so without this they would
+     * be locked out and sent back to the payment step. Their free period counts as a covered
+     * year from registration; it always runs at least the usual notice period from today,
+     * so the first invoice arrives as a normal renewal instead of an immediate lock-out.
+     *
+     * @return int how many institutions were covered
+     */
+    public function coverFreePeriod(?User $admin = null): int
+    {
+        $notice = (int) config('eoffering.platform_fee.invoice_days_before_due', 30);
+        $earliest = Carbon::today()->addDays($notice);
+        $covered = 0;
+
+        Institution::where('type', Institution::TYPE_TSP)
+            ->whereNotNull('registration_completed_at')
+            ->whereNull('fee_paid_until')
+            ->whereNull('suspended_at')
+            ->get()
+            ->each(function (Institution $institution) use ($earliest, $admin, &$covered) {
+                $until = $institution->registration_completed_at->copy()->startOfDay()->addYear()->subDay();
+                $until = $until->lessThan($earliest) ? $earliest->copy() : $until;
+
+                $institution->forceFill(['fee_paid_until' => $until])->save();
+                $this->audit->log('fee.free_period_covered', 'Free registration period for '.$institution->name.' covered until '.$until->toDateString(), $institution, [], $admin);
+                $covered++;
+            });
+
+        return $covered;
+    }
+
     /** The invoice the TSP should pay now, created on demand. */
     public function currentInvoice(Institution $institution): ?PlatformFeeInvoice
     {
@@ -299,7 +331,8 @@ class PlatformFeeService
         $action = $admin ? 'fee.approved' : 'fee.paid';
         $desc = $admin
             ? 'Approved platform fee '.$invoice->reference.' for '.$institution->name
-            : 'Payment confirmed for platform fee '.$invoice->reference.' ('.($invoice->method ?? 'qpay').')';
+            // The display name ("QPay"), not the stored method key ("qpay").
+            : 'Payment confirmed for platform fee '.$invoice->reference.' ('.(config('eoffering.platform_fee.gateways.'.($invoice->method ?? 'qpay')) ?? $invoice->method).')';
 
         $this->audit->log($action, $desc, $invoice, [], $admin);
 

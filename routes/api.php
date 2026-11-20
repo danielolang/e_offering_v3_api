@@ -47,6 +47,7 @@ Route::prefix('onboarding')->group(function ($router) {
 Route::middleware('signed')->group(function ($router) {
     Route::get('documents/{document}', [DocumentController::class, 'show'])->name('documents.show');
     Route::get('bids/{bid}/evidence', [DocumentController::class, 'bidEvidence'])->name('bids.evidence');
+    Route::get('bids/{bid}/commitment/{file}', [DocumentController::class, 'bidCommitmentFile'])->name('bids.commitment-file');
     Route::get('fees/{invoice}/evidence', [DocumentController::class, 'feeEvidence'])->name('fees.evidence');
     Route::get('institutions/{institution}/files/{index}', [DocumentController::class, 'institutionFile'])->name('institutions.file');
 });
@@ -195,6 +196,9 @@ Route::middleware(['auth:api', 'idle', 'active'])->group(function ($router) {
 
         Route::get('offers/{offer}/bid', [BidController::class, 'create'])->name('bids.create');
         Route::post('offers/{offer}/bids', [BidController::class, 'store'])->middleware('throttle:20,1')->name('bids.store');
+        // Online payment with QPay; the return route is declared before bids/{bid} on purpose.
+        Route::match(['get', 'post'], 'bids/qpay/return', [BidController::class, 'qpayReturn'])->name('bids.qpay-return');
+        Route::post('bids/{bid}/qpay', [BidController::class, 'payQPay'])->middleware('throttle:20,1')->name('bids.qpay');
         Route::get('bids/{bid}', [BidController::class, 'show'])->name('bids.show');
         Route::get('bids/{bid}/edit', [BidController::class, 'edit'])->name('bids.edit');
         Route::put('bids/{bid}', [BidController::class, 'update'])->name('bids.update');

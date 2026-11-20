@@ -38,7 +38,7 @@ class OnboardingApiTest extends TestCase
     private function tspPayload(array $users): array
     {
         return [
-            'name' => 'New Securities', 'email' => 'ops@new.test', 'consent' => true,
+            'name' => 'New Securities', 'email' => 'ops@new.test', 'consent' => true, 'registration_number' => 'FMDQ/TSP/001',
             'proof' => UploadedFile::fake()->create('cert.pdf', 50, 'application/pdf'),
             'users' => $users,
         ];
@@ -94,6 +94,10 @@ class OnboardingApiTest extends TestCase
         Notification::assertSentTo($reviewer, PlatformNotification::class, function ($n) {
             return str_contains((string) $n->url, '/auth/reset-password?token=');
         });
+        // The institution's own address (not a user's) is told the outcome too.
+        Notification::assertSentOnDemand(PlatformNotification::class, function ($n, $channels, $to) {
+            return $to->routes['mail'] === 's@sec.test' && str_contains($n->title, 'approved');
+        });
     }
 
     public function test_rejected_users_are_archived_and_can_register_again(): void
@@ -110,7 +114,14 @@ class OnboardingApiTest extends TestCase
         $this->assertSame(Institution::STATUS_REJECTED, $institution->fresh()->status);
         $this->assertDatabaseMissing('users', ['email' => 'a@new.test']);
         $this->assertDatabaseHas('rejected_onboarding_users', ['institution_id' => $institution->id, 'email' => 'a@new.test', 'access_level' => 'inputter']);
-        Notification::assertSentTo($applicant, PlatformNotification::class);
+        // Addressed on demand: the User rows are gone by the time the queued mail runs.
+        Notification::assertSentOnDemand(PlatformNotification::class, function ($n, $channels, $to) use ($applicant) {
+            return $to->routes['mail'] === $applicant->email && str_contains($n->message, 'unreadable');
+        });
+        // The institution's own address is told the outcome too.
+        Notification::assertSentOnDemand(PlatformNotification::class, function ($n, $channels, $to) {
+            return $to->routes['mail'] === 'ops@new.test' && str_contains($n->title, 'not approved');
+        });
 
         // The admin record still lists the archived users.
         $this->bearer($this->staff())->getJson("/api/admin/onboarding/{$institution->id}")

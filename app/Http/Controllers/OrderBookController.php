@@ -99,7 +99,7 @@ class OrderBookController extends Controller
         ], ['comment.required_if' => 'A comment is required when payment is marked Invalid.']);
         $bids->reviewPayment($bid, $request->user(), (bool) $data['valid'], $data['comment'] ?? null);
 
-        return successResponse('Payment marked '.($data['valid'] ? 'Valid (Paid)' : 'Invalid').' for '.$bid->investor_name.'.');
+        return successResponse(($data['valid'] ? 'Payment approved (Paid)' : 'Payment rejected (Invalid)').' for '.$bid->investor_name.'.');
     }
 
     public static function rows(Offer $offer): array

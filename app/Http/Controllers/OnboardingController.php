@@ -47,7 +47,7 @@ class OnboardingController extends Controller
             'name' => ['required', 'string', 'max:191'],
             'email' => ['required', 'email', 'max:191'],
             'phone' => ['nullable', 'string', 'max:30'],
-            'registration_number' => ['nullable', 'string', 'max:60'],
+            'registration_number' => ['required', 'string', 'max:60'],
             'proof' => ['required', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:5120'],
         ], $this->userRules()), $this->messages());
 
@@ -148,7 +148,8 @@ class OnboardingController extends Controller
         $data = $request->validate([
             'verification' => ['required', 'string'],
             'email' => ['required', 'email', 'max:191', Rule::unique('users', 'email')],
-            'phone' => ['required', 'string', 'max:30'],
+            // Not asked on the form any more; the phone number on the BVN record is used instead.
+            'phone' => ['nullable', 'string', 'max:30'],
             'address' => ['nullable', 'string', 'max:255'],
             'csd_name' => ['nullable', 'string', 'max:60'],
             'csd_account_number' => ['nullable', 'string', 'max:40'],

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\BidService;
 use App\Services\PlatformFeeService;
 use App\Services\QPay;
 use Illuminate\Http\Request;
@@ -51,6 +52,23 @@ class QPayWebhookController extends Controller
         $email = $payload['email'] ?? $payload['em'] ?? null;
 
         Log::info('QPay webhook received', ['payload' => $payload, 'reference' => $reference, 'status' => $status]);
+
+        // A bid payment (its own service code) is matched first, and only against bids that were
+        // sent to QPay, so the platform-fee fallbacks below never pick up a subscription payment.
+        $bid = app(BidService::class)->processWebhookPayment(
+            $reference ? (string) $reference : null,
+            $status ? (string) $status : null,
+            $payload,
+            $email ? (string) $email : null
+        );
+        if ($bid) {
+            $isBrowser = ! $request->expectsJson() && ($request->isMethod('GET') || str_contains((string) $request->header('Accept'), 'text/html'));
+            if ($isBrowser) {
+                return redirect(frontendUrl('/investor/bids/'.$bid->id));
+            }
+
+            return response()->json(['status' => 'success', 'message' => 'Bid payment recorded.', 'bid' => $bid->reference]);
+        }
 
         $invoice = $this->fees->processWebhookPayment(
             $reference ? (string) $reference : null,

@@ -48,6 +48,20 @@ class DocumentController extends Controller
         return $this->file($bid->payment_evidence_path, $bid->reference . '-payment');
     }
 
+    /** A commitment form's signature or seal image; same access as the bid's payment evidence. */
+    public function bidCommitmentFile(Request $request, Bid $bid, string $file): BinaryFileResponse
+    {
+        abort_unless(in_array($file, ['signature_1', 'signature_2', 'official_seal'], true), 404);
+        $user = $this->viewer($request);
+        $allowed = $bid->user_id === $user->id
+            || $user->isAdmin()
+            || ($user->isTsp() && Access::tspCanView($user, $bid->offer))
+            || ($user->isRegulator() && Access::canViewOffer($user, $bid->offer));
+        Access::abortUnless($allowed);
+
+        return $this->file($bid->commitment['files'][$file] ?? null, $bid->reference.'-'.$file);
+    }
+
     public function feeEvidence(Request $request, PlatformFeeInvoice $invoice): BinaryFileResponse
     {
         $user = $this->viewer($request);

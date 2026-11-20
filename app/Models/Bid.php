@@ -31,6 +31,7 @@ class Bid extends Model
         'investor_name', 'amount', 'rate', 'yield', 'csd_name', 'csd_account_number', 'bank_name',
         'bank_account_name', 'bank_account_number', 'payee_type', 'payee_id', 'payee_name', 'payee_bank_name',
         'payee_account_name', 'payee_account_number', 'placed_through_institution_id', 'payment_status',
+        'payment_method', 'payment_gateway_reference', 'commitment',
         'payment_reference', 'payment_evidence_path', 'payment_uploaded_at', 'payment_comment',
         'payment_reviewed_by', 'payment_reviewed_at', 'status', 'submitted_at', 'revoked_at',
     ];
@@ -39,6 +40,8 @@ class Bid extends Model
 
     protected $casts = [
         'amount' => 'decimal:2',
+        // Legacy commitment-form details (see BidService::commitmentFrom).
+        'commitment' => 'array',
         'rate' => 'decimal:4',
         'yield' => 'decimal:4',
         'submitted_at' => 'datetime',
@@ -96,6 +99,15 @@ class Bid extends Model
     public function isActive(): bool
     {
         return $this->status === self::ACTIVE;
+    }
+
+    /**
+     * Evidence of payment is with the sponsor and not yet reviewed: the investor cannot pay
+     * again (QPay) or send other evidence until the sponsor marks it Invalid.
+     */
+    public function awaitingPaymentReview(): bool
+    {
+        return (bool) $this->payment_evidence_path && $this->payment_status === self::PAYMENT_PENDING;
     }
 
     /** Investors may amend or revoke while the offer is still open (s6.1 step 4). */
