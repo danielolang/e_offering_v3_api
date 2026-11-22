@@ -35,10 +35,14 @@ class BidService
         $this->qpay = $qpay;
     }
 
-    /** QPay is offered for bids only once FMDQ has a service code for subscription payments. */
+    /** QPay is offered for bids when either the new API or legacy service code is configured. */
     public static function qpayEnabled(): bool
     {
-        return (string) config('services.qpay.bid_scode') !== '' && (string) config('services.qpay.url') !== '';
+        if (empty(config('services.qpay.bid_scode'))) {
+            return false;
+        }
+
+        return (string) config('services.qpay.url') !== '' || (string) config('services.qpay.initiate_url') !== '';
     }
 
     /**
@@ -58,16 +62,57 @@ class BidService
         }
 
         try {
+            $reference = $bid->reference.'-'.time();
+
+            if ($this->qpay->isApiConfigured()) {
+                $name = $investor->name ?: 'Investor';
+                $trimmedName = trim($name);
+                $parts = $trimmedName !== '' ? explode(' ', $trimmedName, 2) : ['User'];
+                $firstName = $parts[0] !== '' ? $parts[0] : 'User';
+                $lastName = !empty($parts[1]) ? $parts[1] : $firstName;
+                $company = $investor->institution?->name ?? 'Investor';
+                $callbackUrl = frontendUrl('/investor/bids/qpay-return');
+
+                $initiateData = $this->qpay->initiate([
+                    'amount' => (float) $bid->amount,
+                    'currency' => 'NGN',
+                    'email' => $investor->email,
+                    'first_name' => $firstName,
+                    'last_name' => $lastName,
+                    'phone' => $investor->phone ?: null,
+                    'company' => $company,
+                    'callback_url' => $callbackUrl,
+                    'metadata' => [
+                        'type' => 'bid_payment',
+                        'bid_id' => $bid->id,
+                        'bid_reference' => $bid->reference,
+                        'offer_id' => $bid->offer_id,
+                    ],
+                ]);
+
+                $qpayRef = $initiateData['reference'] ?: $reference;
+                $bid->forceFill([
+                    'payment_method' => 'qpay',
+                    'payment_gateway_reference' => $qpayRef,
+                ])->save();
+
+                $this->event($bid, $investor, 'payment_qpay_started', null, [
+                    'amount' => (string) $bid->amount,
+                    'qpay_reference' => $qpayRef,
+                ]);
+
+                return $initiateData['checkout_url'];
+            }
+
             $url = $this->qpay->checkoutUrl($investor->email, $investor->name, (string) $bid->amount, $investor->phone ?: null, (string) config('services.qpay.bid_scode'));
+            $bid->forceFill(['payment_method' => 'qpay', 'payment_gateway_reference' => $reference])->save();
+            $this->event($bid, $investor, 'payment_qpay_started', null, ['amount' => (string) $bid->amount]);
+
+            return $url;
         } catch (\RuntimeException $e) {
             report($e);
             throw ValidationException::withMessages(['pay_with' => 'QPay is not available at the moment. Pay by bank transfer and upload the evidence.']);
         }
-
-        $bid->forceFill(['payment_method' => 'qpay', 'payment_gateway_reference' => $bid->reference.'-'.time()])->save();
-        $this->event($bid, $investor, 'payment_qpay_started', null, ['amount' => (string) $bid->amount]);
-
-        return $url;
     }
 
     /**
@@ -78,19 +123,29 @@ class BidService
      */
     public function confirmQPayReturn(User $investor, ?string $status, array $returned, ?string $reference = null): ?Bid
     {
+        $ref = $reference ?: ($returned['newRef'] ?? $returned['ref'] ?? $returned['reference'] ?? null);
+
+        if ($ref && $this->qpay->isApiConfigured()) {
+            $verified = $this->qpay->verify($ref);
+            if ($verified && isset($verified['status'])) {
+                $status = $verified['status'];
+                $returned = array_merge($returned, $verified);
+            }
+        }
+
         if (! $this->qpay->isSuccessStatus($status)) {
             return null;
         }
 
         $bids = Bid::where('user_id', $investor->id)->where('payment_method', 'qpay');
-        $bid = $reference ? (clone $bids)->where(fn ($q) => $this->matchesReference($q, $reference))->latest('id')->first() : null;
+        $bid = $ref ? (clone $bids)->where(fn ($q) => $this->matchesReference($q, $ref))->latest('id')->first() : null;
         // QPay may not echo our reference; the investor's latest bid awaiting QPay is the one.
         $bid = $bid ?? (clone $bids)->whereNotNull('payment_gateway_reference')->where('payment_status', '!=', Bid::PAYMENT_PAID)->latest('updated_at')->first();
         if (! $bid) {
             return null;
         }
 
-        $this->markPaidOnline($bid, $reference ?: $bid->payment_gateway_reference, $returned);
+        $this->markPaidOnline($bid, $ref ?: $bid->payment_gateway_reference, $returned);
 
         return $bid->fresh();
     }
@@ -104,12 +159,30 @@ class BidService
      */
     public function processWebhookPayment(?string $reference, ?string $status, array $payload, ?string $email = null): ?Bid
     {
+        if ($reference && $this->qpay->isApiConfigured()) {
+            $verified = $this->qpay->verify($reference);
+            if ($verified && isset($verified['status'])) {
+                $status = $verified['status'];
+                $payload = array_merge($payload, $verified);
+            }
+        }
+
         if (! $this->qpay->isSuccessStatus($status)) {
             return null;
         }
 
+        $bid = null;
+        $meta = $payload['metadata'] ?? [];
+        if (!empty($meta['bid_id'])) {
+            $bid = Bid::where('id', $meta['bid_id'])->first();
+        } elseif (!empty($meta['bid_reference'])) {
+            $bid = Bid::where('reference', $meta['bid_reference'])->first();
+        }
+
         $bids = Bid::where('payment_method', 'qpay')->whereNotNull('payment_gateway_reference');
-        $bid = $reference ? (clone $bids)->where(fn ($q) => $this->matchesReference($q, $reference))->latest('id')->first() : null;
+        if (! $bid) {
+            $bid = $reference ? (clone $bids)->where(fn ($q) => $this->matchesReference($q, $reference))->latest('id')->first() : null;
+        }
         if (! $bid && $email) {
             $bid = (clone $bids)->where('payment_status', '!=', Bid::PAYMENT_PAID)
                 ->whereHas('user', fn ($q) => $q->where('email', $email))

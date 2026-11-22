@@ -47,6 +47,12 @@ class Handler extends ExceptionHandler
             //
         });
 
+        $this->renderable(function (\Illuminate\Auth\AuthenticationException $e, $request) {
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return errorResponse(401, 'Unauthenticated.', [], 401);
+            }
+        });
+
         $this->renderable(function (\Symfony\Component\Mailer\Exception\TransportExceptionInterface $e, $request) {
             return errorResponse(503, 'We could not send your email right now. Please try again in a few minutes.', [], 503);
         });

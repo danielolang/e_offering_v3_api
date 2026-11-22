@@ -126,19 +126,55 @@ class PlatformFeeService
         $reference = $invoice->reference.'-'.time();
 
         if ($gateway === 'qpay') {
-            // QPay returns the browser to the URL registered for our service code, so the
-            // reference only marks this invoice as the one awaiting QPay's return.
             try {
                 $name = $payer->name ?: ($invoice->institution->contact_name ?: $invoice->institution->name);
                 $phone = $payer->phone ?: ($invoice->institution->contact_phone ?: null);
+                $company = $invoice->institution->name ?: 'Institution';
+
+                if ($this->qpay->isApiConfigured()) {
+                    $trimmedName = trim($name);
+                    $parts = $trimmedName !== '' ? explode(' ', $trimmedName, 2) : ['User'];
+                    $firstName = $parts[0] !== '' ? $parts[0] : 'User';
+                    $lastName = !empty($parts[1]) ? $parts[1] : $firstName;
+
+                    $sep = str_contains($callbackUrl, '?') ? '&' : '?';
+                    $fullCallbackUrl = str_contains($callbackUrl, 'gateway=') ? $callbackUrl : "{$callbackUrl}{$sep}gateway=qpay";
+
+                    $initiateData = $this->qpay->initiate([
+                        'amount' => (float) $invoice->amount,
+                        'currency' => 'NGN',
+                        'email' => $payer->email,
+                        'first_name' => $firstName,
+                        'last_name' => $lastName,
+                        'phone' => $phone,
+                        'company' => $company,
+                        'callback_url' => $fullCallbackUrl,
+                        'metadata' => [
+                            'type' => 'platform_fee',
+                            'invoice_id' => $invoice->id,
+                            'invoice_reference' => $invoice->reference,
+                            'institution_id' => $invoice->institution_id,
+                        ],
+                    ]);
+
+                    $qpayRef = $initiateData['reference'] ?: $reference;
+                    $invoice->forceFill([
+                        'method' => 'qpay',
+                        'gateway_reference' => $qpayRef,
+                        'gateway_response' => $initiateData,
+                    ])->save();
+
+                    return $initiateData['checkout_url'];
+                }
+
                 $url = $this->qpay->checkoutUrl($payer->email, $name, (string) $invoice->amount, $phone);
+                $invoice->forceFill(['method' => 'qpay', 'gateway_reference' => $reference])->save();
+
+                return $url;
             } catch (RuntimeException $e) {
                 report($e);
                 throw ValidationException::withMessages(['method' => 'QPay is not available at the moment. Try another payment method.']);
             }
-            $invoice->forceFill(['method' => 'qpay', 'gateway_reference' => $reference])->save();
-
-            return $url;
         }
 
         throw ValidationException::withMessages(['method' => 'Unknown payment method.']);
@@ -158,11 +194,19 @@ class PlatformFeeService
      */
     public function confirmQPayReturn(Institution $institution, ?string $status, array $returned, ?string $reference = null): ?PlatformFeeInvoice
     {
+        $ref = $reference ?: ($returned['newRef'] ?? $returned['ref'] ?? $returned['reference'] ?? null);
+
+        if ($ref && $this->qpay->isApiConfigured()) {
+            $verified = $this->qpay->verify($ref);
+            if ($verified && isset($verified['status'])) {
+                $status = $verified['status'];
+                $returned = array_merge($returned, $verified);
+            }
+        }
+
         if (! $this->qpay->isSuccessStatus($status)) {
             return null;
         }
-
-        $ref = $reference ?: ($returned['newRef'] ?? $returned['ref'] ?? $returned['reference'] ?? null);
 
         $invoice = null;
 
@@ -214,6 +258,14 @@ class PlatformFeeService
      */
     public function processWebhookPayment(?string $reference, ?string $status, array $payload, ?string $email = null): ?PlatformFeeInvoice
     {
+        if ($reference && $this->qpay->isApiConfigured()) {
+            $verified = $this->qpay->verify($reference);
+            if ($verified && isset($verified['status'])) {
+                $status = $verified['status'];
+                $payload = array_merge($payload, $verified);
+            }
+        }
+
         if (! $this->qpay->isSuccessStatus($status)) {
             return null;
         }
@@ -228,6 +280,18 @@ class PlatformFeeService
             if ($already) {
                 return $already;
             }
+        }
+
+        // Match by metadata if provided
+        $meta = $payload['metadata'] ?? [];
+        if (!empty($meta['invoice_id'])) {
+            $invoice = PlatformFeeInvoice::where('id', $meta['invoice_id'])
+                ->whereIn('status', [PlatformFeeInvoice::UNPAID, PlatformFeeInvoice::REJECTED, PlatformFeeInvoice::PENDING_REVIEW])
+                ->first();
+        } elseif (!empty($meta['invoice_reference'])) {
+            $invoice = PlatformFeeInvoice::where('reference', $meta['invoice_reference'])
+                ->whereIn('status', [PlatformFeeInvoice::UNPAID, PlatformFeeInvoice::REJECTED, PlatformFeeInvoice::PENDING_REVIEW])
+                ->first();
         }
 
         // 1. Try matching by exact gateway_reference or reference

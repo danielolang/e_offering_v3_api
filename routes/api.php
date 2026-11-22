@@ -50,6 +50,14 @@ Route::middleware('signed')->group(function ($router) {
     Route::get('bids/{bid}/commitment/{file}', [DocumentController::class, 'bidCommitmentFile'])->name('bids.commitment-file');
     Route::get('fees/{invoice}/evidence', [DocumentController::class, 'feeEvidence'])->name('fees.evidence');
     Route::get('institutions/{institution}/files/{index}', [DocumentController::class, 'institutionFile'])->name('institutions.file');
+
+    // QPay PDF downloads (signed URL allows opening directly in browser without bearer header)
+    Route::get('admin/fees/{invoice}/invoice-pdf', [ManagementController::class, 'downloadFeeInvoicePdf'])->name('admin.fees.invoice-pdf');
+    Route::get('admin/fees/{invoice}/receipt-pdf', [ManagementController::class, 'downloadFeeReceiptPdf'])->name('admin.fees.receipt-pdf');
+    Route::get('tsp/registration/fee/{invoice}/invoice-pdf', [RegistrationController::class, 'downloadInvoicePdf'])->name('tsp.registration.invoice-pdf');
+    Route::get('tsp/registration/fee/{invoice}/receipt-pdf', [RegistrationController::class, 'downloadReceiptPdf'])->name('tsp.registration.receipt-pdf');
+    Route::get('investor/bids/{bid}/invoice-pdf', [BidController::class, 'downloadInvoicePdf'])->name('investor.bids.invoice-pdf');
+    Route::get('investor/bids/{bid}/receipt-pdf', [BidController::class, 'downloadReceiptPdf'])->name('investor.bids.receipt-pdf');
 });
 
 Route::get('offers/{reference}', [PublicController::class, 'offer'])->name('public.offer');

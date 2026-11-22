@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use Closure;
 use Illuminate\Routing\Middleware\ValidateSignature as Middleware;
 
 class ValidateSignature extends Middleware
@@ -19,4 +20,18 @@ class ValidateSignature extends Middleware
         // 'utm_source',
         // 'utm_term',
     ];
+
+    /**
+     * Handle an incoming request.
+     *
+     * Pass through if the request carries a valid bearer token, otherwise require a valid signed URL.
+     */
+    public function handle($request, Closure $next, ...$args)
+    {
+        if (auth('api')->check()) {
+            return $next($request);
+        }
+
+        return parent::handle($request, $next, ...$args);
+    }
 }
