@@ -59,13 +59,14 @@ class OnboardingService
     }
 
     /**
-     * QII / Non-QII onboarding with CAC documents and representatives (Inputter / Authoriser).
+     * QII / Non-QII onboarding with CAC documents and representatives. Representatives have no
+     * Inputter / Authoriser access level (validation drops it): that split applies to TSPs only.
      *
      * @param UploadedFile[] $files keyed by document label
      */
     public function registerInstitutionalInvestor(array $data, array $files, array $users): Institution
     {
-        $this->assertBothAccessLevels($users);
+        $this->assertDistinctEmails($users);
 
         return DB::transaction(function () use ($data, $files, $users) {
             $documents = [];
@@ -318,6 +319,11 @@ class OnboardingService
             ]);
         }
 
+        $this->assertDistinctEmails($users);
+    }
+
+    private function assertDistinctEmails(array $users): void
+    {
         $emails = array_map('strtolower', array_column($users, 'email'));
         if (count($emails) !== count(array_unique($emails))) {
             throw ValidationException::withMessages(['users' => 'Each user needs a different email address.']);

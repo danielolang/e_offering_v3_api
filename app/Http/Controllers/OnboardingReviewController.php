@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\CacLookup;
 use App\Models\Institution;
 use App\Models\User;
+use App\Services\CacRegistry;
 use App\Services\OnboardingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -66,7 +68,42 @@ class OnboardingReviewController extends Controller
             'institution' => array_merge($institution->toArray(), ['type_label' => $institution->typeLabel()]),
             'files' => $files,
             'reviewer' => optional(User::find($institution->reviewed_by))->name,
+            // QII / Non-QII only: what the CAC register said at each search, newest first.
+            'cac' => self::checksCac($institution) ? self::cacLookups($institution) : null,
         ]);
+    }
+
+    /**
+     * "Fetch Latest from CAC": searches the register again with the institution's RC number and
+     * name, stores the result with the time, and returns the updated list.
+     */
+    public function refreshCac(Request $request, Institution $institution, CacRegistry $cac): JsonResponse
+    {
+        abort_unless(self::checksCac($institution), 422, 'Only QII / Non-QII institutions are checked against the CAC register.');
+        $lookup = $cac->refresh($institution, $request->user());
+
+        $message = [
+            CacLookup::VERIFIED => 'CAC record fetched: the RC number and name match.',
+            CacLookup::NAME_MISMATCH => 'CAC record fetched: the RC number is registered under a different name.',
+            CacLookup::RC_MISMATCH => 'CAC record fetched: the name is registered under a different RC number.',
+            CacLookup::NOT_FOUND => 'CAC record fetched: neither the RC number nor the name was found.',
+            CacLookup::UNAVAILABLE => $lookup->error ?: 'The CAC registry could not be reached. Try again shortly.',
+        ][$lookup->result];
+
+        return successResponse($message, ['cac' => self::cacLookups($institution)]);
+    }
+
+    private static function checksCac(Institution $institution): bool
+    {
+        return in_array($institution->type, [Institution::TYPE_QII, Institution::TYPE_NON_QII], true);
+    }
+
+    private static function cacLookups(Institution $institution): array
+    {
+        return $institution->cacLookups()->with('searcher:id,name')->limit(20)->get()
+            ->map(function (CacLookup $lookup) {
+                return array_merge($lookup->toArray(), ['searched_by_name' => optional($lookup->searcher)->name]);
+            })->all();
     }
 
     public function approve(Request $request, Institution $institution, OnboardingService $onboarding): JsonResponse

@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class AllotmentItem extends Model
 {
+    use SerializesLocalDates;
+
     protected $fillable = [
         'allotment_id', 'bid_id', 'subscribed', 'allotted', 'units', 'released', 'filled_pct', 'eligible',
         'ineligible_reason', 'override_amount', 'override_reason', 'overridden_by', 'overridden_at',

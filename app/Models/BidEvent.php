@@ -10,6 +10,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  */
 class BidEvent extends Model
 {
+    use SerializesLocalDates;
+
     public $timestamps = false;
 
     protected $fillable = ['bid_id', 'user_id', 'action', 'before', 'after', 'comment', 'created_at'];

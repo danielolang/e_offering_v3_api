@@ -11,6 +11,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  */
 class OfferAmendment extends Model
 {
+    use SerializesLocalDates;
+
     public const PENDING_AUTHORISATION = 'pending_authorisation';
     public const PENDING_ADMIN_REVIEW = 'pending_admin_review';
     public const APPROVED = 'approved';

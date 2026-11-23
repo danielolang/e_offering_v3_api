@@ -12,6 +12,8 @@ use Illuminate\Support\Str;
  */
 class Institution extends Model
 {
+    use SerializesLocalDates;
+
     use HasFactory;
 
     public const TYPE_TSP = 'tsp';
@@ -61,6 +63,12 @@ class Institution extends Model
     public function rejectedUsers(): HasMany
     {
         return $this->hasMany(RejectedOnboardingUser::class);
+    }
+
+    /** CAC registry searches for a QII / Non-QII (see CacRegistry), newest first. */
+    public function cacLookups(): HasMany
+    {
+        return $this->hasMany(CacLookup::class)->latest('searched_at')->latest('id');
     }
 
     public function offers(): HasMany

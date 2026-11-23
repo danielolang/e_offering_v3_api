@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class OtpCode extends Model
 {
+    use SerializesLocalDates;
+
     protected $fillable = ['user_id', 'purpose', 'code_hash', 'attempts', 'expires_at', 'consumed_at'];
 
     protected $hidden = ['code_hash'];

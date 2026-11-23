@@ -11,6 +11,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  */
 class AuditLog extends Model
 {
+    use SerializesLocalDates;
+
     public $timestamps = false;
 
     protected $fillable = [

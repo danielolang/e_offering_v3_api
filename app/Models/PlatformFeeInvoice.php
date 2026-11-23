@@ -8,6 +8,8 @@ use Illuminate\Support\Str;
 
 class PlatformFeeInvoice extends Model
 {
+    use SerializesLocalDates;
+
     public const UNPAID = 'unpaid';
     public const PENDING_REVIEW = 'pending_review';
     public const PAID = 'paid';

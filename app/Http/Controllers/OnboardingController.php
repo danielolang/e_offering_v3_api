@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Institution;
 use App\Models\User;
 use App\Services\BvnVerifier;
+use App\Services\CacRegistry;
 use App\Services\OnboardingService;
 use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Http\JsonResponse;
@@ -56,7 +57,7 @@ class OnboardingController extends Controller
         return successResponse('Your request was submitted for review.', ['kind' => 'tsp', 'reference' => $institution->reference]);
     }
 
-    public function storeInstitutional(Request $request): JsonResponse
+    public function storeInstitutional(Request $request, CacRegistry $cac): JsonResponse
     {
         $data = $request->validate(array_merge([
             'consent' => ['accepted'],
@@ -70,9 +71,15 @@ class OnboardingController extends Controller
             'memorandum' => ['nullable', 'file', 'mimes:pdf', 'max:10240'],
             'cac_directors' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:5120'],
             'cac_shareholders' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:5120'],
-        ], $this->userRules()), $this->messages() + [
+        ], $this->userRules(false)), $this->messages() + [
             'registration_number.unique' => 'An institution with this CAC registration number is already onboarded.',
         ]);
+
+        // The RC number and name must match the CAC register (unless CAC cannot be reached).
+        $check = $cac->enabled() ? $cac->search($data['registration_number'], $data['name']) : null;
+        if ($check) {
+            $cac->assertValid($check);
+        }
 
         $files = array_filter([
             'Certificate of Incorporation' => $request->file('certificate'),
@@ -82,6 +89,9 @@ class OnboardingController extends Controller
         ]);
 
         $institution = $this->onboarding->registerInstitutionalInvestor($data, $files, $data['users']);
+        if ($check) {
+            $cac->record($institution, $check);
+        }
 
         return successResponse('Your request was submitted for review.', ['kind' => 'institutional', 'reference' => $institution->reference]);
     }
@@ -200,15 +210,18 @@ class OnboardingController extends Controller
         return $payload['record'];
     }
 
-    private function userRules(): array
+    /**
+     * TSP users carry an Inputter / Authoriser access level (at least two users). QII / Non-QII
+     * representatives have no access level, so one representative is enough.
+     */
+    private function userRules(bool $accessLevels = true): array
     {
         return [
-            'users' => ['required', 'array', 'min:2', 'max:20'],
+            'users' => ['required', 'array', 'min:'.($accessLevels ? 2 : 1), 'max:20'],
             'users.*.name' => ['required', 'string', 'max:191'],
             'users.*.email' => ['required', 'email', 'max:191', 'distinct', Rule::unique('users', 'email')],
             'users.*.phone' => ['nullable', 'string', 'max:30'],
-            'users.*.access_level' => ['required', Rule::in([User::INPUTTER, User::AUTHORISER])],
-        ];
+        ] + ($accessLevels ? ['users.*.access_level' => ['required', Rule::in([User::INPUTTER, User::AUTHORISER])]] : []);
     }
 
     private function messages(): array

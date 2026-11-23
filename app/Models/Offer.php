@@ -20,6 +20,8 @@ use Illuminate\Support\Str;
  */
 class Offer extends Model
 {
+    use SerializesLocalDates;
+
     use HasFactory;
 
     public const DRAFT = 'draft';

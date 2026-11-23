@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class InvestorProfile extends Model
 {
+    use SerializesLocalDates;
+
     protected $fillable = [
         'user_id', 'category', 'bvn', 'nin', 'date_of_birth', 'address', 'csd_name', 'csd_account_number',
         'bank_name', 'bank_account_name', 'bank_account_number', 'bvn_payload', 'bvn_verified_at',

@@ -102,6 +102,7 @@ Route::middleware(['auth:api', 'idle', 'active'])->group(function ($router) {
             Route::post('{institution}/approve', [OnboardingReviewController::class, 'approve'])->name('admin.onboarding.approve');
             Route::post('{institution}/reject', [OnboardingReviewController::class, 'reject'])->name('admin.onboarding.reject');
             Route::post('{institution}/resend', [OnboardingReviewController::class, 'resend'])->name('admin.onboarding.resend');
+            Route::post('{institution}/cac', [OnboardingReviewController::class, 'refreshCac'])->name('admin.onboarding.cac');
         });
 
         Route::get('users', [ManagementController::class, 'users'])->name('admin.users.index');

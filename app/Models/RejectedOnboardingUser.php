@@ -11,6 +11,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  */
 class RejectedOnboardingUser extends Model
 {
+    use SerializesLocalDates;
+
     protected $fillable = [
         'institution_id', 'original_user_id', 'type', 'access_level', 'name', 'email', 'phone',
         'privacy_consent_at', 'submitted_at', 'rejected_at',

@@ -143,6 +143,78 @@ class OnboardingApiTest extends TestCase
         ])->assertOk();
     }
 
+    public function test_institutional_representatives_have_no_access_level(): void
+    {
+        // One representative, no Inputter / Authoriser: that split applies to TSPs only.
+        $this->postJson('/api/onboarding/institutional', [
+            'consent' => true, 'category' => 'non_qii', 'name' => 'Rep Ltd', 'registration_number' => 'RC777', 'email' => 'info@rep.test',
+            'certificate' => UploadedFile::fake()->create('cac.pdf', 50, 'application/pdf'),
+            'users' => [['name' => 'Ada Rep', 'email' => 'ada@rep.test', 'access_level' => 'authoriser']],
+        ])->assertOk();
+
+        $this->assertNull(User::where('email', 'ada@rep.test')->value('access_level'));
+
+        $this->postJson('/api/onboarding/institutional', [
+            'consent' => true, 'category' => 'qii', 'name' => 'No Rep Ltd', 'registration_number' => 'RC778', 'email' => 'info@norep.test',
+            'certificate' => UploadedFile::fake()->create('cac.pdf', 50, 'application/pdf'),
+            'users' => [],
+        ])->assertStatus(422)->assertJsonValidationErrors('users');
+    }
+
+    public function test_cac_register_checks_rc_number_and_name_and_admin_can_refresh(): void
+    {
+        config(['services.cac.driver' => 'cac']);
+        $company = ['approvedName' => 'CAVIDEL LIMITED', 'rcNumber' => '1235440', 'companyRegistrationDate' => '2015-01-12T01:00:00Z', 'classificationName' => 'COMPANY', 'status' => 'INACTIVE'];
+        $none = ['status' => 200, 'data' => [], 'success' => true];
+        $found = ['status' => 200, 'data' => [$company], 'success' => true];
+        \Illuminate\Support\Facades\Http::fake([
+            '*' => \Illuminate\Support\Facades\Http::sequence()
+                ->push($none)->push($none)     // 1: RC search, then name search: nothing
+                ->push($none)->push($found)    // 2: RC unknown, name found
+                ->push($found)                 // 3: RC found (no name search)
+                ->push($found)                 // 4: RC and name found
+                ->push(['status' => 200, 'data' => [['status' => 'ACTIVE'] + $company], 'success' => true]),
+        ]);
+        $n = 0;
+        $payload = function (array $over) use (&$n) {
+            $n++;
+
+            return $over + [
+                'consent' => true, 'category' => 'qii', 'email' => "info{$n}@cavidel.test",
+                'certificate' => UploadedFile::fake()->create('cac.pdf', 50, 'application/pdf'),
+                'users' => [['name' => 'Ada Rep', 'email' => "ada{$n}@cavidel.test"]],
+            ];
+        };
+        $resultFor = function (string $name) {
+            return Institution::where('name', $name)->firstOrFail()->cacLookups()->first()->result;
+        };
+
+        // 1. CAC knows neither the RC number nor the name: refused.
+        $this->postJson('/api/onboarding/institutional', $payload(['name' => 'Nothing Like It Ltd', 'registration_number' => '9999999']))
+            ->assertStatus(422)->assertJsonValidationErrors('registration_number');
+
+        // 2. Name known, RC number not: accepted, flagged for the reviewer.
+        $this->postJson('/api/onboarding/institutional', $payload(['name' => 'Cavidel Limited', 'registration_number' => '9999999']))->assertOk();
+        $this->assertSame('rc_mismatch', $resultFor('Cavidel Limited'));
+
+        // 3. RC number known, name not: accepted, flagged.
+        $this->postJson('/api/onboarding/institutional', $payload(['name' => 'Cavidel Partners', 'registration_number' => 'RC 1235440']))->assertOk();
+        $this->assertSame('name_mismatch', $resultFor('Cavidel Partners'));
+
+        // 4. Both match ("Ltd" for "Limited", an "RC" prefix); the search is stored for the admin.
+        $this->postJson('/api/onboarding/institutional', $payload(['name' => 'Cavidel Ltd.', 'registration_number' => 'RC1235440']))->assertOk();
+        $institution = Institution::where('name', 'Cavidel Ltd.')->firstOrFail();
+        $this->assertSame('verified', $resultFor('Cavidel Ltd.'));
+
+        // The admin fetches the latest record: a new search, newest first, now Active.
+        $admin = $this->staff();
+        $this->bearer($admin)->postJson("/api/admin/onboarding/{$institution->id}/cac")->assertOk()
+            ->assertJsonPath('data.cac.0.company.status', 'ACTIVE')
+            ->assertJsonPath('data.cac.0.searched_by_name', $admin->name)
+            ->assertJsonPath('data.cac.1.searched_by_name', null);
+        $this->bearer($admin)->getJson("/api/admin/onboarding/{$institution->id}")->assertOk()->assertJsonCount(2, 'data.cac');
+    }
+
     public function test_onboarding_review_is_admin_only(): void
     {
         $this->bearer($this->staff('investor'))->getJson('/api/admin/onboarding')->assertStatus(403);
