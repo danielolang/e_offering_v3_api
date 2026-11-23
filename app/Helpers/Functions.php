@@ -40,7 +40,21 @@ if (!function_exists('signedFileUrl')) {
     function signedFileUrl(string $route, $params): string
     {
         $params = is_array($params) ? array_values($params) : [$params];
-        $names = ['documents.show' => ['document'], 'bids.evidence' => ['bid'], 'bids.commitment-file' => ['bid', 'file'], 'fees.evidence' => ['invoice'], 'institutions.file' => ['institution', 'index']];
+        $names = [
+            'documents.show' => ['document'],
+            'bids.evidence' => ['bid'],
+            'bids.commitment-file' => ['bid', 'file'],
+            'fees.evidence' => ['invoice'],
+            'institutions.file' => ['institution', 'index'],
+            'tsp.registration.invoice-pdf' => ['invoice'],
+            'tsp.registration.receipt-pdf' => ['invoice'],
+            'admin.fees.invoice-pdf' => ['invoice'],
+            'admin.fees.receipt-pdf' => ['invoice'],
+            'investor.bids.invoice-pdf' => ['bid'],
+            'investor.bids.receipt-pdf' => ['bid'],
+            'bids.invoice-pdf' => ['bid'],
+            'bids.receipt-pdf' => ['bid'],
+        ];
         $named = array_combine($names[$route], $params);
         $named['uid'] = auth('api')->id();
 

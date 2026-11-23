@@ -4,20 +4,25 @@ namespace App\Http\Controllers;
 
 use App\Models\PlatformFeeInvoice;
 use App\Models\Setting;
+use App\Models\User;
 use App\Services\AuditLogger;
 use App\Services\PlatformFeeService;
+use App\Services\QPay;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Symfony\Component\HttpFoundation\Response;
 
 /** The "Registration" module a TSP/RM lands on after approval (CR s3.2 steps 5-12). */
 class RegistrationController extends Controller
 {
     private PlatformFeeService $fees;
+    private QPay $qpay;
 
-    public function __construct(PlatformFeeService $fees)
+    public function __construct(PlatformFeeService $fees, QPay $qpay)
     {
         $this->fees = $fees;
+        $this->qpay = $qpay;
     }
 
     public function show(Request $request): JsonResponse
@@ -25,6 +30,18 @@ class RegistrationController extends Controller
         $institution = $request->user()->institution;
         $openInvoice = $institution->registration_completed_at ? $this->fees->currentInvoice($institution) : null;
         $invoice = $openInvoice ?? $institution->feeInvoices()->latest('id')->first();
+
+        $invoiceData = $invoice ? array_merge($invoice->toArray(), [
+            'invoice_pdf_url' => $invoice->gateway_reference ? signedFileUrl('tsp.registration.invoice-pdf', $invoice) : null,
+            'receipt_pdf_url' => ($invoice->gateway_reference && $invoice->status === PlatformFeeInvoice::PAID) ? signedFileUrl('tsp.registration.receipt-pdf', $invoice) : null,
+        ]) : null;
+
+        $invoicesData = $institution->feeInvoices()->latest('id')->get()->map(function (PlatformFeeInvoice $inv) {
+            return array_merge($inv->toArray(), [
+                'invoice_pdf_url' => $inv->gateway_reference ? signedFileUrl('tsp.registration.invoice-pdf', $inv) : null,
+                'receipt_pdf_url' => ($inv->gateway_reference && $inv->status === PlatformFeeInvoice::PAID) ? signedFileUrl('tsp.registration.receipt-pdf', $inv) : null,
+            ]);
+        });
 
         return successResponse('Registration fetched.', [
             'institution' => $institution->only([
@@ -34,8 +51,8 @@ class RegistrationController extends Controller
             ]),
             'feeEnabled' => $this->fees->enabled(),
             'fullAccess' => $this->fees->hasFullAccess($institution),
-            'invoice' => $invoice,
-            'invoices' => $institution->feeInvoices()->latest('id')->get(),
+            'invoice' => $invoiceData,
+            'invoices' => $invoicesData,
             'bank' => [
                 'bank_name' => Setting::get('platform_fee_bank_name'),
                 'account_name' => Setting::get('platform_fee_account_name'),
@@ -65,6 +82,9 @@ class RegistrationController extends Controller
             'bank_name' => ['required', 'string', 'max:100'],
             'bank_account_name' => ['required', 'string', 'max:191'],
             'bank_account_number' => ['required', 'digits:10'],
+        ], [
+            'bank_account_number.digits' => 'The account number must be exactly 10 digits.',
+            'bank_account_number.required' => 'The account number is required.',
         ]);
 
         $institution = $request->user()->institution;
@@ -97,7 +117,7 @@ class RegistrationController extends Controller
         $this->own($request, $invoice);
         $data = $request->validate(['method' => ['required', Rule::in(['qpay'])]]);
 
-        $url = $this->fees->startGatewayPayment($invoice, $data['method'], $request->user(), frontendUrl('/tsp/registration?invoice=' . $invoice->id));
+        $url = $this->fees->startGatewayPayment($invoice, $data['method'], $request->user(), frontendUrl('/tsp/registration?gateway=qpay&invoice=' . $invoice->id));
 
         return successResponse('Continue to payment.', ['redirect' => $url]);
     }
@@ -176,11 +196,54 @@ class RegistrationController extends Controller
         $this->own($request, $invoice);
         abort_unless($invoice->status === PlatformFeeInvoice::PAID, 404);
 
-        return successResponse('Receipt fetched.', ['invoice' => $invoice->load('institution', 'reviewer:id,name')]);
+        $invoiceData = array_merge($invoice->load('institution', 'reviewer:id,name')->toArray(), [
+            'invoice_pdf_url' => $invoice->gateway_reference ? signedFileUrl('tsp.registration.invoice-pdf', $invoice) : null,
+            'receipt_pdf_url' => $invoice->gateway_reference ? signedFileUrl('tsp.registration.receipt-pdf', $invoice) : null,
+        ]);
+
+        return successResponse('Receipt fetched.', ['invoice' => $invoiceData]);
+    }
+
+    /** Download or stream official payment invoice PDF from QPay. */
+    public function downloadInvoicePdf(Request $request, PlatformFeeInvoice $invoice): Response
+    {
+        $this->own($request, $invoice);
+
+        $reference = $invoice->gateway_reference;
+        if (empty($reference)) {
+            abort(404, 'No QPay payment invoice is available for this invoice.');
+        }
+
+        $download = $request->boolean('download');
+        return $this->qpay->streamInvoicePdf($reference, $download);
+    }
+
+    /** Download or stream official payment receipt PDF from QPay. */
+    public function downloadReceiptPdf(Request $request, PlatformFeeInvoice $invoice): Response
+    {
+        $this->own($request, $invoice);
+        abort_unless($invoice->status === PlatformFeeInvoice::PAID, 404, 'Receipt is only available for paid invoices.');
+
+        $reference = $invoice->gateway_reference;
+        if (empty($reference)) {
+            abort(404, 'No QPay payment receipt is available for this invoice.');
+        }
+
+        $download = $request->boolean('download');
+        return $this->qpay->streamReceiptPdf($reference, $download);
+    }
+
+    private function resolveViewer(Request $request): User
+    {
+        $user = $request->user() ?: User::find($request->query('uid'));
+        abort_unless($user && $user->isActive(), 403);
+
+        return $user;
     }
 
     private function own(Request $request, PlatformFeeInvoice $invoice): void
     {
-        abort_unless($invoice->institution_id === $request->user()->institution_id, 403);
+        $user = $this->resolveViewer($request);
+        abort_unless($user->isAdmin() || $invoice->institution_id === $user->institution_id, 403);
     }
 }

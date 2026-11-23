@@ -15,9 +15,11 @@ use App\Services\AuditLogger;
 use App\Services\OfferWorkflow;
 use App\Services\OnboardingService;
 use App\Services\PlatformFeeService;
+use App\Services\QPay;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Symfony\Component\HttpFoundation\Response;
 
 /** FMDQ Admin: dashboard, staff accounts, platform fees and settings. */
 class ManagementController extends Controller
@@ -174,6 +176,8 @@ class ManagementController extends Controller
                 ->through(function (PlatformFeeInvoice $i) {
                     return array_merge($i->toArray(), [
                         'evidence_url' => $i->evidence_path ? signedFileUrl('fees.evidence', $i) : null,
+                        'invoice_pdf_url' => $i->gateway_reference ? signedFileUrl('admin.fees.invoice-pdf', $i) : null,
+                        'receipt_pdf_url' => ($i->gateway_reference && $i->status === PlatformFeeInvoice::PAID) ? signedFileUrl('admin.fees.receipt-pdf', $i) : null,
                     ]);
                 }),
             'filters' => ['status' => $status],
@@ -198,6 +202,38 @@ class ManagementController extends Controller
         return successResponse('Payment ' . $invoice->reference . ' was rejected.');
     }
 
+    /** Stream or download official payment invoice PDF from QPay for a platform fee invoice. */
+    public function downloadFeeInvoicePdf(Request $request, PlatformFeeInvoice $invoice, QPay $qpay): Response
+    {
+        $user = $request->user() ?: User::find($request->query('uid'));
+        abort_unless($user && $user->isActive() && $user->isAdmin(), 403);
+
+        $reference = $invoice->gateway_reference;
+        if (empty($reference)) {
+            abort(404, 'No QPay payment invoice is available for this record.');
+        }
+
+        $download = $request->boolean('download');
+        return $qpay->streamInvoicePdf($reference, $download);
+    }
+
+    /** Stream or download official payment receipt PDF from QPay for a paid platform fee invoice. */
+    public function downloadFeeReceiptPdf(Request $request, PlatformFeeInvoice $invoice, QPay $qpay): Response
+    {
+        $user = $request->user() ?: User::find($request->query('uid'));
+        abort_unless($user && $user->isActive() && $user->isAdmin(), 403);
+
+        abort_unless($invoice->status === PlatformFeeInvoice::PAID, 404, 'Receipt is only available for paid invoices.');
+
+        $reference = $invoice->gateway_reference;
+        if (empty($reference)) {
+            abort(404, 'No QPay payment receipt is available for this record.');
+        }
+
+        $download = $request->boolean('download');
+        return $qpay->streamReceiptPdf($reference, $download);
+    }
+
     public function settings(): JsonResponse
     {
         return successResponse('Settings fetched.', [
@@ -220,7 +256,10 @@ class ManagementController extends Controller
             'platform_fee_amount' => ['required', 'numeric', 'min:0'],
             'platform_fee_bank_name' => ['nullable', 'string', 'max:100'],
             'platform_fee_account_name' => ['nullable', 'string', 'max:191'],
-            'platform_fee_account_number' => ['nullable', 'string', 'max:20'],
+            'platform_fee_account_number' => ['nullable', 'string', 'max:10', 'regex:/^[0-9]*$/'],
+        ], [
+            'platform_fee_account_number.regex' => 'The account number must contain numbers alone.',
+            'platform_fee_account_number.max' => 'The account number may not be greater than 10 digits.',
         ]);
 
         $before = Setting::allValues();

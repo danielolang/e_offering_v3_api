@@ -37,6 +37,7 @@ class PageSmokeTest extends TestCase
 
     private function user(string $email): User
     {
+        $email = str_replace('@example.com', '@fmdqgroup.com', $email);
         return User::where('email', $email)->firstOrFail();
     }
 

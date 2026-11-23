@@ -45,16 +45,23 @@ return [
         'secret' => env('IGREE_SECRET'),
     ],
 
-    // FMDQ QPay hosted checkout (see App\Services\QPay). The service code and the return
-    // URL it maps to are issued by the QPay team; the key and IV must match QPay's.
+    // FMDQ QPay hosted checkout & Payment API (see App\Services\QPay).
     'qpay' => [
+        'driver' => env('QPAY_DRIVER', env('APP_ENV') === 'testing' ? 'odrum' : 'api'),
+        'frontend_url' => env('QPAY_FRONTEND_URL', 'http://localhost:5175'),
+        'initiate_url' => env('QPAY_INITIATE_URL', 'http://localhost/qpay/api/payment/initiate'),
+        'invoice_url' => env('QPAY_INVOICE_URL', 'http://localhost/qpay/api/payment/invoice'),
+        'receipt_url' => env('QPAY_RECEIPT_URL', 'http://localhost/qpay/api/payment/receipt'),
+        'base_url' => env('QPAY_BASE_URL', 'http://localhost/qpay/api'),
+        'app_id' => env('QPAY_APP_ID', '30'),
+        'username' => env('QPAY_USERNAME', 'fmrr_app_user'),
+        'password' => env('QPAY_PASSWORD', 'securepassword123'),
+        'company' => env('QPAY_COMPANY', 'FMDQ Group'),
+        'currency' => env('QPAY_CURRENCY', 'NGN'),
+
+        // Legacy / fallback odrum encryption settings
         'url' => env('QPAY_URL', 'https://10.10.16.47/qpay/odrum/'),
         'scode' => env('QPAY_SCODE', '09014444'),
-        // Investors' bid payments: a separate service code, so QPay credits the subscription
-        // account (not the platform-fee one) and returns investors to /investor/bids/qpay-return.
-        // Outside production it falls back to QPAY_SCODE so QPay can be tried on test before
-        // FMDQ issues the bid code. In production, empty = QPay is not offered for bids (bank
-        // transfer with evidence still works).
         'bid_scode' => env('QPAY_BID_SCODE', env('APP_ENV') === 'production' ? null : env('QPAY_SCODE', '09014444')),
         'encryption_key' => env('QPAY_ENCRYPTION_KEY', 'AKY_45_EncryptToDecrypt_DHJA'),
         'encryption_iv' => env('QPAY_ENCRYPTION_IV', '1789123114561012'),

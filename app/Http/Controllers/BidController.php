@@ -2,15 +2,18 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\JsonResponse;
 use App\Http\Requests\BidRequest;
 use App\Models\Allotment;
 use App\Models\Bid;
 use App\Models\Offer;
+use App\Models\User;
 use App\Services\BidService;
+use App\Services\QPay;
 use App\Support\Access;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Commitment form: submit, amend, revoke, and upload evidence of payment (CR s6.1-6.2).
@@ -110,6 +113,8 @@ class BidController extends Controller
             'bid' => array_merge($bid->toArray(), [
                 'evidence_url' => $bid->payment_evidence_path ? signedFileUrl('bids.evidence', $bid) : null,
                 'commitment_files' => self::commitmentFileUrls($bid),
+                'invoice_pdf_url' => $bid->payment_gateway_reference ? signedFileUrl('investor.bids.invoice-pdf', $bid) : null,
+                'receipt_pdf_url' => ($bid->payment_gateway_reference && $bid->payment_status === Bid::PAYMENT_PAID) ? signedFileUrl('investor.bids.receipt-pdf', $bid) : null,
             ]),
             'canChange' => $bid->canBeChangedByInvestor(),
             'canUploadEvidence' => $bid->isActive() && $bid->payment_status !== Bid::PAYMENT_PAID && ! $bid->offer->allotmentStarted(),
@@ -170,6 +175,35 @@ class BidController extends Controller
         return successResponse('Evidence of payment uploaded. Payment status stays "Pending" until the sponsor confirms it.');
     }
 
+    /** Stream or download the official Payment Invoice PDF from QPay for this bid. */
+    public function downloadInvoicePdf(Request $request, Bid $bid, QPay $qpay): Response
+    {
+        $this->own($request, $bid);
+
+        $reference = $bid->payment_gateway_reference;
+        if (empty($reference)) {
+            abort(404, 'No QPay payment invoice is available for this bid.');
+        }
+
+        $download = $request->boolean('download');
+        return $qpay->streamInvoicePdf($reference, $download);
+    }
+
+    /** Stream or download the official Payment Receipt PDF from QPay for this paid bid. */
+    public function downloadReceiptPdf(Request $request, Bid $bid, QPay $qpay): Response
+    {
+        $this->own($request, $bid);
+        abort_unless($bid->payment_status === Bid::PAYMENT_PAID, 404, 'Receipt is only available for paid bids.');
+
+        $reference = $bid->payment_gateway_reference;
+        if (empty($reference)) {
+            abort(404, 'No QPay payment receipt is available for this bid.');
+        }
+
+        $download = $request->boolean('download');
+        return $qpay->streamReceiptPdf($reference, $download);
+    }
+
     private function formProps(Request $request, Offer $offer, ?Bid $bid): array
     {
         $user = $request->user();
@@ -226,8 +260,17 @@ class BidController extends Controller
         return $urls;
     }
 
+    private function resolveViewer(Request $request): User
+    {
+        $user = $request->user() ?: User::find($request->query('uid'));
+        abort_unless($user && $user->isActive(), 403);
+
+        return $user;
+    }
+
     private function own(Request $request, Bid $bid): void
     {
-        abort_unless($bid->user_id === $request->user()->id, 403);
+        $user = $this->resolveViewer($request);
+        abort_unless($user->isAdmin() || $bid->user_id === $user->id, 403);
     }
 }
