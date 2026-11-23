@@ -63,34 +63,38 @@ class ManagementController extends Controller
                 ]);
             });
 
-        $requests = UserChangeRequest::with('requester:id,name')->where('status', UserChangeRequest::PENDING)->latest('id')->get()
-            ->map(function (UserChangeRequest $r) use ($request) {
-                return array_merge($r->only(['id', 'action', 'target_name', 'target_email', 'created_at']), [
+        $me = $request->user();
+        $requests = UserChangeRequest::with('requester:id,name', 'target:id,type,access_level,institution_id')->where('status', UserChangeRequest::PENDING)->latest('id')->get()
+            ->map(function (UserChangeRequest $r) use ($me) {
+                return array_merge($r->only(['id', 'action', 'target_name', 'target_email', 'note', 'created_at']), [
+                    'target_role' => optional($r->target)->roleLabel(),
                     'requester' => optional($r->requester)->name,
-                    'can_review' => $r->requested_by !== $request->user()->id,
+                    'can_review' => $me->isAuthoriser() && $r->requested_by !== $me->id,
                 ]);
             });
 
         return successResponse('Users fetched.', ['users' => $users, 'requests' => $requests, 'filters' => $request->only('type', 'search')]);
     }
 
-    /** FMDQ staff accounts (Admin and CSD / Depository users). */
+    /** FMDQ staff accounts (Admin and CSD / Depository users). Inputters raise them, Authorisers approve. */
     public function storeUser(Request $request, AuditLogger $audit): JsonResponse
     {
+        $this->assertInputter($request);
         $data = $request->validate([
             'name' => ['required', 'string', 'max:191'],
             'email' => ['required', 'email', 'max:191', Rule::unique('users', 'email')],
             'type' => ['required', Rule::in([User::TYPE_ADMIN, User::TYPE_CSD])],
+            'access_level' => ['required', Rule::in([User::INPUTTER, User::AUTHORISER])],
         ]);
 
         $user = User::create(array_merge($data, ['status' => User::STATUS_PENDING]));
         $this->openRequest('create', $user, $request->user());
         $audit->log('user.create_requested', 'Requested ' . $user->roleLabel() . ' account for ' . $user->email, $user, [], $request->user());
 
-        return successResponse($user->name . ' was submitted. Another admin must approve the account.');
+        return successResponse($user->name . ' was submitted. An Authoriser must approve the account.');
     }
 
-    /** Applies a pending change. The admin who asked for it cannot approve it. */
+    /** Applies a pending change. Only an Authoriser, and not the one who asked for it, can approve it. */
     public function approveUserRequest(Request $request, UserChangeRequest $change, OnboardingService $onboarding, AuditLogger $audit): JsonResponse
     {
         $this->assertReviewable($request, $change);
@@ -128,7 +132,7 @@ class ManagementController extends Controller
         return successResponse('Rejected: ' . $change->action . ' ' . $change->target_name . '.');
     }
 
-    private function openRequest(string $action, User $target, User $requester): void
+    private function openRequest(string $action, User $target, User $requester, ?string $note = null): void
     {
         UserChangeRequest::create([
             'action' => $action,
@@ -136,11 +140,18 @@ class ManagementController extends Controller
             'target_name' => $target->name,
             'target_email' => $target->email,
             'requested_by' => $requester->id,
+            'note' => $note,
         ]);
+    }
+
+    private function assertInputter(Request $request): void
+    {
+        abort_unless($request->user()->isInputter(), 403, 'Only an Inputter can raise staff account changes.');
     }
 
     private function assertReviewable(Request $request, UserChangeRequest $change): void
     {
+        abort_unless($request->user()->isAuthoriser(), 403, 'Only an Authoriser can approve or reject staff account changes.');
         abort_unless($change->status === UserChangeRequest::PENDING, 422, 'This request has already been decided.');
         abort_if($change->requested_by === $request->user()->id, 422, 'A different admin must review this request.');
     }
@@ -152,15 +163,18 @@ class ManagementController extends Controller
 
     public function toggleUser(Request $request, User $user, AuditLogger $audit): JsonResponse
     {
+        $this->assertInputter($request);
         abort_if($user->id === $request->user()->id, 422, 'You cannot disable your own account.');
 
         abort_if(UserChangeRequest::where('target_user_id', $user->id)->where('status', UserChangeRequest::PENDING)->exists(), 422, 'This user already has a change waiting for approval.');
 
         $action = $user->status === User::STATUS_DISABLED ? 'enable' : 'disable';
-        $this->openRequest($action, $user, $request->user());
-        $audit->log('user.status_requested', 'Requested ' . $action . ' for ' . $user->email, $user, [], $request->user());
+        // The Authoriser reads why: a note is required to disable, optional to enable.
+        $data = $request->validate(['note' => [$action === 'disable' ? 'required' : 'nullable', 'string', 'max:1000']]);
+        $this->openRequest($action, $user, $request->user(), $data['note'] ?? null);
+        $audit->log('user.status_requested', 'Requested ' . $action . ' for ' . $user->email, $user, ['note' => $data['note'] ?? null], $request->user());
 
-        return successResponse('Submitted. Another admin must approve this change.');
+        return successResponse('Submitted. An Authoriser must approve this change.');
     }
 
     public function fees(Request $request): JsonResponse
