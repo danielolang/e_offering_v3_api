@@ -26,10 +26,10 @@ class DatabaseSeeder extends Seeder
             ], $attributes));
         };
 
-        $user(['name' => 'FMDQ Admin', 'email' => 'admin@fmdqgroup.com', 'type' => User::TYPE_ADMIN]);
-        // Staff account changes need a second admin to approve them.
-        $user(['name' => 'FMDQ Admin Two', 'email' => 'admin2@fmdqgroup.com', 'type' => User::TYPE_ADMIN]);
-        $user(['name' => 'FMDQ Depository', 'email' => 'csd@fmdqgroup.com', 'type' => User::TYPE_CSD]);
+        $user(['name' => 'FMDQ Admin', 'email' => 'admin@fmdqgroup.com', 'type' => User::TYPE_ADMIN, 'access_level' => User::INPUTTER]);
+        // Staff account changes raised by an Inputter need an Authoriser to approve them.
+        $user(['name' => 'FMDQ Admin Two', 'email' => 'admin2@fmdqgroup.com', 'type' => User::TYPE_ADMIN, 'access_level' => User::AUTHORISER]);
+        $user(['name' => 'FMDQ Depository', 'email' => 'csd@fmdqgroup.com', 'type' => User::TYPE_CSD, 'access_level' => User::INPUTTER]);
 
         $tsp = Institution::updateOrCreate(['email' => 'tsp@fmdqgroup.com'], [
             'type' => Institution::TYPE_TSP,

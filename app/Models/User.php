@@ -167,7 +167,7 @@ class User extends Authenticatable implements JWTSubject
             self::TYPE_REGULATOR => 'Regulator',
         ];
         $label = $labels[$this->type] ?? ucfirst((string) $this->type);
-        if ($this->type === self::TYPE_TSP && $this->access_level) {
+        if (in_array($this->type, [self::TYPE_TSP, self::TYPE_ADMIN, self::TYPE_CSD], true) && $this->access_level) {
             $label .= ' '.ucfirst($this->access_level);
         }
         if ($this->type === self::TYPE_INVESTOR) {

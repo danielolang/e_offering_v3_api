@@ -139,45 +139,72 @@ class LegacyControlsTest extends TestCase
         $this->attempt('Password@1')->assertStatus(403)->assertJsonPath('data.redirect', '/auth/forgot-password');
     }
 
-    public function test_a_new_staff_account_waits_for_a_second_admin(): void
+    private function staff(string $level, string $email): User
+    {
+        $user = $this->member('admin', $email);
+        $user->forceFill(['access_level' => $level])->save();
+
+        return $user;
+    }
+
+    public function test_a_new_staff_account_waits_for_an_authoriser(): void
     {
         Notification::fake();
-        $maker = $this->member('admin', 'maker@fmdq.test');
-        $checker = $this->member('admin', 'checker@fmdq.test');
+        $maker = $this->staff(User::INPUTTER, 'maker@fmdq.test');
+        $otherInputter = $this->staff(User::INPUTTER, 'maker2@fmdq.test');
+        $checker = $this->staff(User::AUTHORISER, 'checker@fmdq.test');
 
-        $this->bearer($maker)->postJson('/api/admin/users', ['name' => 'New', 'email' => 'new@fmdq.test', 'type' => 'admin'])->assertOk();
+        $this->bearer($maker)->postJson('/api/admin/users', ['name' => 'New', 'email' => 'new@fmdq.test', 'type' => 'admin'])
+            ->assertStatus(422)->assertJsonValidationErrors('access_level');
+        $this->postJson('/api/admin/users', ['name' => 'New', 'email' => 'new@fmdq.test', 'type' => 'admin', 'access_level' => 'authoriser'])->assertOk();
         $new = User::where('email', 'new@fmdq.test')->first();
         $this->assertSame('pending', $new->status);
+        $this->assertSame('FMDQ Admin Authoriser', $new->roleLabel());
         $request = UserChangeRequest::first();
 
-        $this->postJson("/api/admin/user-requests/{$request->id}/approve")->assertStatus(422);
+        $this->postJson("/api/admin/user-requests/{$request->id}/approve")->assertStatus(403);
+        $this->bearer($otherInputter)->postJson("/api/admin/user-requests/{$request->id}/approve")->assertStatus(403);
         $this->assertSame('pending', $new->fresh()->status);
 
-        $this->bearer($checker)->postJson("/api/admin/user-requests/{$request->id}/approve")->assertOk();
+        $this->bearer($checker)->getJson('/api/admin/users')->assertJsonPath('data.requests.0.can_review', true)
+            ->assertJsonPath('data.requests.0.target_role', 'FMDQ Admin Authoriser');
+        $this->postJson("/api/admin/user-requests/{$request->id}/approve")->assertOk();
         $this->assertSame('active', $new->fresh()->status);
         Notification::assertSentTo($new, PlatformNotification::class);
     }
 
-    public function test_disabling_a_user_needs_a_second_admin_and_can_be_rejected(): void
+    public function test_only_an_inputter_can_create_or_disable_users(): void
     {
-        $maker = $this->member('admin', 'maker@fmdq.test');
-        $checker = $this->member('admin', 'checker@fmdq.test');
+        $checker = $this->staff(User::AUTHORISER, 'checker@fmdq.test');
         $target = $this->member('investor', 'target@x.test');
 
-        $this->bearer($maker)->postJson("/api/admin/users/{$target->id}/status")->assertOk();
-        $this->assertSame('active', $target->fresh()->status, 'unchanged until approved');
-        $this->postJson("/api/admin/users/{$target->id}/status")->assertStatus(422);
+        $this->bearer($checker)->postJson('/api/admin/users', ['name' => 'New', 'email' => 'new@fmdq.test', 'type' => 'admin', 'access_level' => 'inputter'])->assertStatus(403);
+        $this->postJson("/api/admin/users/{$target->id}/status", ['note' => 'Left the firm'])->assertStatus(403);
+        $this->assertSame(0, UserChangeRequest::count());
+    }
 
+    public function test_disabling_a_user_needs_a_note_and_an_authoriser_and_can_be_rejected(): void
+    {
+        $maker = $this->staff(User::INPUTTER, 'maker@fmdq.test');
+        $checker = $this->staff(User::AUTHORISER, 'checker@fmdq.test');
+        $target = $this->member('investor', 'target@x.test');
+
+        $this->bearer($maker)->postJson("/api/admin/users/{$target->id}/status")->assertStatus(422)->assertJsonValidationErrors('note');
+        $this->postJson("/api/admin/users/{$target->id}/status", ['note' => 'Account compromised'])->assertOk();
+        $this->assertSame('active', $target->fresh()->status, 'unchanged until approved');
+        $this->postJson("/api/admin/users/{$target->id}/status", ['note' => 'Again'])->assertStatus(422);
+
+        $this->bearer($checker)->getJson('/api/admin/users')->assertJsonPath('data.requests.0.note', 'Account compromised');
         $request = UserChangeRequest::first();
-        $this->bearer($checker)->postJson("/api/admin/user-requests/{$request->id}/reject", ['comment' => 'No basis'])->assertOk();
+        $this->postJson("/api/admin/user-requests/{$request->id}/reject", ['comment' => 'No basis'])->assertOk();
         $this->assertSame('active', $target->fresh()->status);
     }
 
     public function test_rejecting_a_new_staff_account_removes_it(): void
     {
-        $maker = $this->member('admin', 'maker@fmdq.test');
-        $checker = $this->member('admin', 'checker@fmdq.test');
-        $this->bearer($maker)->postJson('/api/admin/users', ['name' => 'New', 'email' => 'new@fmdq.test', 'type' => 'csd'])->assertOk();
+        $maker = $this->staff(User::INPUTTER, 'maker@fmdq.test');
+        $checker = $this->staff(User::AUTHORISER, 'checker@fmdq.test');
+        $this->bearer($maker)->postJson('/api/admin/users', ['name' => 'New', 'email' => 'new@fmdq.test', 'type' => 'csd', 'access_level' => 'inputter'])->assertOk();
 
         $this->bearer($checker)->postJson('/api/admin/user-requests/' . UserChangeRequest::first()->id . '/reject', ['comment' => 'Duplicate'])->assertOk();
 
