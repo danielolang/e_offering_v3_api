@@ -14,7 +14,7 @@ if (!function_exists('successResponse')) {
         ], Response::HTTP_OK);
     }
 }
-
+//
 if (!function_exists('errorResponse')) {
     function errorResponse(int $statusCode = ResponseStatusCodes::BAD_REQUEST, string $message = "An error occurred.", $data = [], $code = Response::HTTP_UNPROCESSABLE_ENTITY)
     {
