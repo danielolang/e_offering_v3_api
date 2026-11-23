@@ -15,6 +15,8 @@ use Illuminate\Support\Str;
  */
 class Bid extends Model
 {
+    use SerializesLocalDates;
+
     use HasFactory;
 
     public const ACTIVE = 'active';

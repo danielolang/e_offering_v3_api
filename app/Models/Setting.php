@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\Cache;
  */
 class Setting extends Model
 {
+    use SerializesLocalDates;
+
     public const DEFAULTS = [
         // CR s4.4: FMDQ Admin review is built in but disabled by default.
         'fmdq_admin_review_enabled' => false,

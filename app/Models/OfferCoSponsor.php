@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class OfferCoSponsor extends Model
 {
+    use SerializesLocalDates;
+
     protected $fillable = [
         'offer_id', 'institution_id', 'can_view_order_book', 'can_confirm_payments', 'bank_name',
         'bank_account_name', 'bank_account_number',

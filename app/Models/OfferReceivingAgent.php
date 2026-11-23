@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class OfferReceivingAgent extends Model
 {
+    use SerializesLocalDates;
+
     protected $fillable = ['offer_id', 'name', 'bank_name', 'bank_account_name', 'bank_account_number'];
 
     public function offer(): BelongsTo

@@ -12,6 +12,8 @@ use Illuminate\Database\Eloquent\Relations\MorphTo;
  */
 class WorkflowAction extends Model
 {
+    use SerializesLocalDates;
+
     public const STAGE_INPUTTER = 'inputter';
     public const STAGE_AUTHORISER = 'tsp_authoriser';
     public const STAGE_ADMIN = 'fmdq_admin';

@@ -8,6 +8,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 /** A staff account change waiting for a second admin (legacy maker-checker). */
 class UserChangeRequest extends Model
 {
+    use SerializesLocalDates;
+
     public const PENDING = 'pending';
 
     protected $guarded = [];

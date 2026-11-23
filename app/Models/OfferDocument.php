@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class OfferDocument extends Model
 {
+    use SerializesLocalDates;
+
     public const DISK = 'documents';
 
     public const OFFER = 'offer';

@@ -68,5 +68,18 @@ return [
         'notify_email' => env('CSD_NOTIFY_EMAIL'),
     ],
 
+    // CAC public search (icrp.cac.gov.ng) for QII / Non-QII RC number and name checks.
+    // "cac" calls the registry; "off" skips the check (tests, or if the registry is retired).
+    'cac' => [
+        'driver' => env('CAC_DRIVER', 'cac'),
+        'url' => env('CAC_SEARCH_URL', 'https://authapp.cac.gov.ng/name_similarity_app/api/public_search/search'),
+        'timeout' => (int) env('CAC_TIMEOUT', 15),
+        // Path to a CA bundle (PEM) when PHP's default one does not trust the chain, e.g. behind
+        // a TLS-inspecting proxy. Certificate checks always stay on.
+        // Defaults to storage/certs/ca-bundle.pem when present (exported from the Windows trusted
+        // roots on a PHP install that ships without a CA bundle).
+        'ca_bundle' => env('CAC_CA_BUNDLE', is_file(storage_path('certs/ca-bundle.pem')) ? storage_path('certs/ca-bundle.pem') : null),
+    ],
+
 ];
 

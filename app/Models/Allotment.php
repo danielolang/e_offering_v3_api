@@ -15,6 +15,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  */
 class Allotment extends Model
 {
+    use SerializesLocalDates;
+
     public const DRAFT = 'draft';
     public const PENDING_AUTHORISATION = 'pending_authorisation';
     public const RETURNED = 'returned';
