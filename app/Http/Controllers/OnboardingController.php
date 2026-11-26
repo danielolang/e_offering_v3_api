@@ -48,7 +48,8 @@ class OnboardingController extends Controller
             'name' => ['required', 'string', 'max:191'],
             'email' => ['required', 'email', 'max:191'],
             'phone' => ['nullable', 'string', 'max:30'],
-            'registration_number' => ['required', 'string', 'max:60'],
+            // Optional for TSPs: not every sponsor has an FMDQ registration number yet.
+            'registration_number' => ['nullable', 'string', 'max:60'],
             'proof' => ['required', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:5120'],
         ], $this->userRules()), $this->messages());
 
