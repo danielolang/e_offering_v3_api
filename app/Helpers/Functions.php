@@ -14,7 +14,7 @@ if (!function_exists('successResponse')) {
         ], Response::HTTP_OK);
     }
 }
-
+//
 if (!function_exists('errorResponse')) {
     function errorResponse(int $statusCode = ResponseStatusCodes::BAD_REQUEST, string $message = "An error occurred.", $data = [], $code = Response::HTTP_UNPROCESSABLE_ENTITY)
     {
@@ -66,7 +66,13 @@ if (!function_exists('screenPath')) {
     /** The React screen address for a named API route. */
     function screenPath(string $apiUrl): string
     {
-        return preg_replace('#^https?://[^/]+/api#', '', $apiUrl) ?: '/';
+        $path = preg_replace('#^https?://[^/]+.*?/api#', '', $apiUrl);
+        if ($path === $apiUrl) {
+            $parsed = parse_url($apiUrl, PHP_URL_PATH) ?? '/';
+            $path = preg_replace('#^.*?/api#', '', $parsed);
+        }
+
+        return '/' . ltrim((string) $path, '/');
     }
 }
 
